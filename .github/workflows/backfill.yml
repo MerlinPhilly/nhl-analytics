@@ -1,0 +1,82 @@
+name: Backfill history
+
+# Run once by hand (Actions tab → Backfill history → Run workflow).
+# Safe to re-run: games already loaded are skipped, so a re-run resumes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Seasons to load (comma-separated)"
+        default: "20212022,20222023,20232024,20242025,20252026,20262027"
+      force:
+        description: "Re-pull games already loaded"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: nhl-data
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Get or create the data store
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data
+          if ! gh release view data-store >/dev/null 2>&1; then
+            gh release create data-store --title "Data store" --latest=false \
+              --notes "Holds nhl.duckdb, the database the nightly job updates. Not a software release."
+          fi
+          gh release download data-store -p nhl.duckdb -D data || echo "Starting a fresh database."
+
+      - name: Load seasons
+        run: |
+          FORCE=""
+          if [ "${{ inputs.force }}" = "true" ]; then FORCE="--force"; fi
+          python -m nhl.ingest backfill --seasons "${{ inputs.seasons }}" $FORCE
+
+      - name: Save database
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f data/nhl.duckdb ]; then gh release upload data-store data/nhl.duckdb --clobber; fi
+
+      - name: Build site
+        run: |
+          mkdir -p _site
+          cp -r site/* _site/
+          python -m nhl.export --out _site/data
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: backfill
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
