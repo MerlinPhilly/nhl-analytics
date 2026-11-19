@@ -123,8 +123,6 @@ th { position: sticky; top: 0; background: var(--surface-2); color: var(--text-s
 th.sorted::after { content: " ▾"; }
 th.sorted.asc::after { content: " ▴"; }
 tbody tr:hover { background: var(--surface-2); }
-td.hot { background: var(--hot-bg); }
-td.cold { background: var(--cold-bg); }
 .tbl-tools { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 10px; flex-wrap: wrap; }
 
 /* tabs */
@@ -158,9 +156,9 @@ td.cold { background: var(--cold-bg); }
 /* results strip */
 .strip { display: flex; flex-wrap: wrap; gap: 3px; }
 .strip a { width: 18px; height: 18px; border-radius: 4px; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; color: #fff; text-decoration: none; }
-.strip .W { background: var(--good); }
-.strip .L { background: var(--critical); }
-.strip .OTL { background: var(--warning); color: #3a2a00; }
+.strip .W { background: var(--tier-elite); }
+.strip .L { background: var(--tier-poor); }
+.strip .OTL { background: var(--tier-below); color: #2b1600; }
 
 /* percentile meters */
 .pct-row { display: grid; grid-template-columns: 110px 1fr 70px 40px; gap: 10px; align-items: center; padding: 4px 0; font-size: 13px; }
@@ -178,10 +176,14 @@ td.cold { background: var(--cold-bg); }
 .standings td:first-child { width: 45%; }
 .empty { padding: 30px; text-align: center; color: var(--text-muted); }
 
-/* league-rank tiers (diverging: blue = better, red = worse, gray = middle; always paired with a text label) */
-:root { --tier-elite: #184f95; --tier-above: #6da7ec; --tier-avg: #c3c2b7; --tier-below: #f09a9a; --tier-poor: #c53a3a; }
-:root[data-theme="dark"] { --tier-elite: #6da7ec; --tier-above: #2a5f9e; --tier-avg: #55544f; --tier-below: #8f4040; --tier-poor: #e66767; }
-@media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) { --tier-elite: #6da7ec; --tier-above: #2a5f9e; --tier-avg: #55544f; --tier-below: #8f4040; --tier-poor: #e66767; } }
+/* Standard ranking scale, used everywhere (tiles, percentile bars, screener, form badges):
+   green = good, gray = middle, orange/red = bad. Always paired with a text label. */
+:root { --tier-elite: #1a7f37; --tier-above: #6cc07a; --tier-avg: #bdbcb5; --tier-below: #f2a65a; --tier-poor: #d03b3b;
+        --tier-elite-bg: #dcf3e1; --tier-poor-bg: #fbe1de; --on-tier: #ffffff; }
+:root[data-theme="dark"] { --tier-elite: #3fb950; --tier-above: #2d7a3c; --tier-avg: #5a5953; --tier-below: #b8692d; --tier-poor: #e5534b;
+        --tier-elite-bg: #17351f; --tier-poor-bg: #3d1f1c; --on-tier: #0e0e0d; }
+@media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) { --tier-elite: #3fb950; --tier-above: #2d7a3c; --tier-avg: #5a5953; --tier-below: #b8692d; --tier-poor: #e5534b;
+        --tier-elite-bg: #17351f; --tier-poor-bg: #3d1f1c; --on-tier: #0e0e0d; } }
 .t-elite { --tier: var(--tier-elite); } .t-above { --tier: var(--tier-above); } .t-avg { --tier: var(--tier-avg); }
 .t-below { --tier: var(--tier-below); } .t-poor { --tier: var(--tier-poor); }
 .tile[class*="t-"] { border-left: 5px solid var(--tier); }
@@ -192,3 +194,22 @@ td.cold { background: var(--cold-bg); }
 .rank-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--text-secondary); margin: 0 0 8px; }
 .rank-legend { display: flex; flex-wrap: wrap; gap: 12px; }
 .rank-basis select { padding: 2px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-0); color: var(--text-primary); font-size: 12px; margin-left: 4px; }
+td.hot { background: var(--tier-elite-bg); }
+td.cold { background: var(--tier-poor-bg); }
+.meter > div.t-elite, .meter > div.t-above, .meter > div.t-avg, .meter > div.t-below, .meter > div.t-poor { background: var(--tier); }
+
+/* form (hot/cold) */
+.form { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.form.f-hot { background: var(--tier-elite); color: var(--on-tier); }
+.form.f-warming { background: var(--tier-elite-bg); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--tier-above); }
+.form.f-steady { background: var(--surface-2); color: var(--text-secondary); }
+.form.f-cooling { background: var(--tier-poor-bg); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--tier-below); }
+.form.f-cold { background: var(--tier-poor); color: var(--on-tier); }
+.flag { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; border: 1px solid var(--border); color: var(--text-secondary); margin-left: 4px; white-space: nowrap; }
+.form-card { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; align-items: start; }
+.form-card .big { font-size: 15px; padding: 4px 12px; }
+.form-card ul { margin: 0; padding-left: 18px; color: var(--text-secondary); }
+.form-card li { margin: 2px 0; }
+.trend-list { list-style: none; margin: 0; padding: 0; }
+.trend-list li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 7px 0; border-bottom: 1px solid var(--grid); }
+.trend-list .why { grid-column: 1 / -1; font-size: 12px; color: var(--text-secondary); }

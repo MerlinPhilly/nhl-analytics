@@ -15,7 +15,7 @@ import math
 import os
 from collections import defaultdict
 
-from . import db
+from . import db, trends
 
 log = logging.getLogger("nhl.export")
 
@@ -223,6 +223,7 @@ def export(con, out: str) -> dict:
             "skaters": table(con, SKATER_AGG, [season]),
             "goalies": table(con, GOALIE_AGG, [season]),
             "teams": table(con, TEAM_AGG, [season]),
+            "form": trends.season_form(con, season),
         })
         write(f"{out}/games/{season}.json", table(con, """
             SELECT game_id, game_date, game_type, away_abbrev, away_score, home_abbrev, home_score,

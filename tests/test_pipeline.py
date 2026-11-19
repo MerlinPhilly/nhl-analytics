@@ -57,5 +57,13 @@ def test_backfill_daily_export(env):
     assert meta["counts"]["games"] == n_games
     pl = json.load(open(out / "players.json"))
     assert len(pl["rows"]) == con.execute("SELECT count(*) FROM players").fetchone()[0]
+    lg = json.load(open(out / "league" / "20262027.json"))
+    form = lg["form"]
+    assert form["skaters"] and form["teams"] and form["goalies"]
+    statuses = [v["status"] for v in form["skaters"].values()]
+    assert set(statuses) <= {"hot", "warming", "steady", "cooling", "cold"}
+    # random mock league: most players should read as steady, extremes should be rare
+    assert statuses.count("steady") / len(statuses) > 0.5
+    assert (statuses.count("hot") + statuses.count("cold")) / len(statuses) < 0.15
     some = pl["rows"][0][0]
     assert (out / "players" / f"{some}.json").exists()

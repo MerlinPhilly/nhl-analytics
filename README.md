@@ -29,11 +29,18 @@ After that, **Nightly update** runs every morning by itself. To refresh mid-day,
 | **Home** | Last night's results, points/goals leaders, hottest players (last 10 vs season), save % leaders, standings by division |
 | **Player** | Bio; filters for season, game type, home/away, opponent, team result, rest days, month, last N games and date range; summary tiles; rolling trend chart; percentile ranks vs league peers; splits (season, home/away, month, opponent, opponent's division, result, rest, day of week); full game log; season-by-season table. Goalies get a goalie version (SV%, GAA, even-strength and penalty-kill SV%, quality starts). |
 | **Team** | Same filters; record, goals for/against, shot share, PP%, PK%, PDO; results strip; trend charts; splits; skater and goalie tables; game log |
+| **Trends** | Who's hot and cold right now: hottest/coldest skaters and goalies, all 32 teams ranked by form, plus "likely to cool off" (hot streaks built on unsustainable shooting), "due to heat up" (shots still coming, pucks not going in) and ice-time role changes |
 | **Screener** | Every skater, goalie or team for a season, sortable on any column, with last-10-vs-season trend columns highlighted |
 | **Compare** | Two players or two teams side by side over the same filters, with an overlaid trend |
 | **Games** | Results by date, plus a box score for every game |
 
 Every table has a **Download CSV** button, so you can take any cut into Excel.
+
+## Colors and form
+
+Every ranking uses one standard scale: **green = good, gray = middle, orange/red = bad**. That covers stat-box tiers (Elite 90th+ percentile, Above avg 70+, Average 30+, Below avg 10+, Bottom 10%), percentile bars, screener highlights, form badges and the results strip. Every colored mark also carries a text label.
+
+**Form** (`nhl/trends.py`) compares each player's or team's last 10 and last 5 games with what we'd expect from them. Expectation = earlier games this season blended with last season (or the league average for the position). The size of the gap is scored with exact odds: +0.9 or more is Warming, +1.8 or more is Hot, and the same thresholds below zero mean Cooling and Cold. Goalies use save % over their last 5 and 10 games; teams use points % plus goal differential over the last 10. Each badge lists its reasons (point streaks, shot volume, ice-time changes, shooting-% luck).
 
 ## Running it on your Mac (optional)
 

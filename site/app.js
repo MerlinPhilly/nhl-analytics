@@ -405,11 +405,12 @@ async function pageHome() {
   const leader = (title, rows, valFmt, sub) => `<div class="card"><h2>${title}</h2><table><tbody>${rows.map((r, i) =>
     `<tr><td class="muted" style="width:24px">${i + 1}</td><td>${playerLink(r.player_id, r.name)} <span class="muted">${r.team}</span></td><td class="n"><b>${valFmt(r)}</b></td>${sub ? `<td class="n muted">${sub(r)}</td>` : ""}</tr>`).join("")}</tbody></table></div>`;
   const top = (arr, f, n = 10) => [...arr].sort((a, b) => f(b) - f(a)).slice(0, n);
-  const hot = sk.filter(s => s.gp >= minGp && s.gp10 >= 5).map(s => ({ ...s, delta: s.p10 / s.gp10 - s.p / s.gp }));
   L.innerHTML =
     leader("Points", top(sk, s => s.p), s => s.p, s => `${s.gp} GP`) +
     leader("Goals", top(sk, s => s.g), s => s.g, s => `${s.gp} GP`) +
-    leader("Hottest · last 10 vs season", top(hot, s => s.delta), s => fmtSigned(s.delta, 2) + " P/GP", s => `${s.p10} P in L10`) +
+    `<div class="card"><h2>Hottest right now <a href="#/trends" style="font-size:12px;font-weight:400;margin-left:6px">All trends →</a></h2><ul class="trend-list">${Object.entries(league.form?.skaters || {})
+      .map(([id, f]) => ({ id, ...f, r: sk.find(x => String(x.player_id) === id) })).filter(x => x.r && x.score >= 0.9).sort((a, b) => b.score - a.score).slice(0, 8)
+      .map(x => `<li><span>${playerLink(x.id, x.r.name)} <span class="muted">${x.r.team}</span></span><span>${formBadge(x.status)}</span><span class="why">${esc(x.reasons[0])}</span></li>`).join("") || '<li class="muted">Nobody is well above expectation right now.</li>'}</ul></div>` +
     leader(`Save % <span class="muted">(min ${Math.max(3, Math.round(Math.max(0, ...gk.map(g => g.gp)) * 0.4))} GP)</span>`,
       top(gk.filter(g => g.gp >= Math.max(3, Math.round(Math.max(0, ...gk.map(x => x.gp)) * 0.4))), g => g.sv / g.sa), g => fmtSv(g.sv / g.sa), g => `${g.gp} GP`);
 
@@ -462,7 +463,8 @@ async function pagePlayer(id) {
         ${bio.birth_country ? ` · ${esc(bio.birth_country)}` : ""}</div>
       <div class="meta">${games.length} games loaded · ${seasons.map(seasonLabel).join(", ")}${teamsPlayed.length > 1 ? " · Teams: " + teamsPlayed.map(teamLink).join(", ") : ""}</div>
     </div><div><a class="btn" href="#/compare?a=${id}">Compare with…</a></div></div>
-    <div id="fbar"></div><div id="body"></div>`;
+    <div id="form"></div><div id="fbar"></div><div id="body"></div>`;
+  formFor(isGoalie ? "goalies" : "skaters", id, latest).then(({ f: fm, asOf }) => { const el = $("#form"); if (el) el.innerHTML = formCard(fm, asOf, latest, isGoalie ? "goalie" : "skater"); });
 
   const body = $("#body");
   let metric = isGoalie ? "svpct" : "points", win = 10, rankVs = "group";
@@ -594,8 +596,26 @@ async function percentiles(bio, season, type) {
   el.innerHTML = stats.map(([label, fn, f]) => {
     const v = fn(me), arr = peers.map(fn);
     const pct = arr.length ? Math.round((arr.filter(x => x < v).length + 0.5 * arr.filter(x => x === v).length) / arr.length * 100) : null;
-    return `<div class="pct-row"><span class="sec">${label}</span><div class="meter" title="${pct}th percentile"><div style="width:${pct ?? 0}%"></div></div><span class="num">${f(v)}</span><span class="num"><b>${pct ?? "–"}</b></span></div>`;
+    return `<div class="pct-row"><span class="sec">${label}</span><div class="meter" title="${pct}th percentile"><div class="t-${pct == null ? "avg" : TIERS.find(t => pct >= t[0])[1]}" style="width:${pct ?? 0}%"></div></div><span class="num">${f(v)}</span><span class="num"><b>${pct ?? "–"}</b></span></div>`;
   }).join("") + `<div class="muted" style="font-size:12px;margin-top:6px">${me.gp < minGp ? "Below the games-played minimum — read with care. " : ""}Right column = percentile rank (100 = best in group).</div>`;
+}
+
+
+// ------------------------------------------------------------------ form (hot / cold)
+const FORM = { hot: ["🔥", "Hot"], warming: ["▲", "Warming"], steady: ["–", "Steady"], cooling: ["▼", "Cooling"], cold: ["❄", "Cold"] };
+const FORM_ORDER = { hot: 4, warming: 3, steady: 2, cooling: 1, cold: 0 };
+const FLAG_TEXT = { regression_risk: "Likely to cool", buy_low: "Due to heat up", role_up: "Role ↑", role_down: "Role ↓" };
+const formBadge = (st, cls = "") => (st ? `<span class="form f-${st} ${cls}">${FORM[st][0]} ${FORM[st][1]}</span>` : `<span class="muted">–</span>`);
+const flagChips = flags => (flags || []).map(f => `<span class="flag">${FLAG_TEXT[f] || f}</span>`).join("");
+async function formFor(kind, id, season) {
+  try { const lg = await load(`league/${season}.json`); return { f: lg.form?.[kind]?.[String(id)], asOf: lg.form?.as_of }; } catch { return {}; }
+}
+function formCard(fm, asOf, season, what) {
+  if (!fm) return `<div class="card"><h2>Current form</h2><div class="muted">Not enough games in ${seasonLabel(season)} yet to judge form (needs about 8${what === "goalie" ? " appearances (5)" : ""}).</div></div>`;
+  const current = season === META.current_season;
+  return `<div class="card"><h2>${current ? "Current form" : "Form at season's end"} <span class="muted">· as of ${fmtDate(fm.last_game || asOf)}</span></h2>
+    <div class="form-card"><div>${formBadge(fm.status, "big")}<div class="muted" style="font-size:11px;margin-top:6px" title="How unusual the recent stretch is vs expectation (±1.8 = hot/cold)">score ${fmtSigned(fm.score, 1)}</div></div>
+    <div><ul>${fm.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>${fm.flags?.length ? `<div style="margin-top:6px">${flagChips(fm.flags)}</div>` : ""}</div></div></div>`;
 }
 
 // ---------- team
@@ -639,7 +659,8 @@ async function pageTeam(abbr) {
   app.innerHTML = h`
     <div class="head"><div><h1>${esc(t.name || abbr)}</h1><div class="meta">${t.division ? esc(t.division) + " Division · " + esc(t.conference) + " Conference · " : ""}${games.length} games loaded</div></div>
       <div><a class="btn" href="#/compare?ta=${abbr}">Compare with…</a></div></div>
-    <div id="fbar"></div><div id="body"></div>`;
+    <div id="form"></div><div id="fbar"></div><div id="body"></div>`;
+  formFor("teams", abbr, latest).then(({ f: fm, asOf }) => { const el = $("#form"); if (el) el.innerHTML = formCard(fm, asOf, latest, "team"); });
   const body = $("#body");
   const render = async () => {
     const fg = applyFilter(games, f, "result");
@@ -735,10 +756,13 @@ async function pageScreener(params) {
     drawTable();
     function drawTable() {
       const res = $("#res");
+      const F = league.form || {};
+      const formCol = kind => ({ k: "form", label: "Form", html: r => formBadge(F[kind]?.[String(kind === "teams" ? r.team : r.player_id)]?.status),
+        sortVal: r => F[kind]?.[String(kind === "teams" ? r.team : r.player_id)]?.score ?? null, csv: r => F[kind]?.[String(kind === "teams" ? r.team : r.player_id)]?.status || "" });
       if (st.tab === "teams") {
         const rows = objs(league.teams).filter(t => t.game_type === st.type).map(t => ({ ...t, ptspct: t.pts / (2 * t.gp), diff: t.gf - t.ga, gfpg: t.gf / t.gp, gapg: t.ga / t.gp,
           pp: div(t.ppg, t.ppo), pk: t.pko ? 1 - t.pkga / t.pko : null, sfpct: div(t.sf, t.sf + t.sa), l10pct: (2 * t.w10 + t.otl10) / (2 * Math.max(1, t.w10 + t.l10 + t.otl10)) }));
-        sortTable(res, rows, [{ k: "team", label: "Team", html: r => `${teamLink(r.team)} <span class="muted">${esc(TEAM_BY[r.team]?.common_name || "")}</span>` }, { k: "gp", label: "GP", n: 1 },
+        sortTable(res, rows, [{ k: "team", label: "Team", html: r => `${teamLink(r.team)} <span class="muted">${esc(TEAM_BY[r.team]?.common_name || "")}</span>` }, formCol("teams"), { k: "gp", label: "GP", n: 1 },
           { k: "rec", label: "Record", html: r => `${r.w}-${r.l}-${r.otl}`, sortVal: r => r.pts }, { k: "pts", label: "PTS", n: 1 }, { k: "ptspct", label: "P%", n: 1, fmt: fmtSv },
           { k: "gfpg", label: "GF/GP", n: 1, fmt: v => fmt(v, 2) }, { k: "gapg", label: "GA/GP", n: 1, fmt: v => fmt(v, 2) }, { k: "diff", label: "Diff", n: 1, fmt: v => fmtSigned(v) },
           { k: "sfpct", label: "SF%", n: 1, fmt: v => fmtPct(v) }, { k: "pp", label: "PP%", n: 1, fmt: v => fmtPct(v) }, { k: "pk", label: "PK%", n: 1, fmt: v => fmtPct(v) },
@@ -757,7 +781,7 @@ async function pageScreener(params) {
       const nameCol = { k: "name", label: "Player", html: r => playerLink(r.player_id, r.name) };
       if (isG) {
         rows = rows.map(r => ({ ...r, svpct: div(r.sv, r.sa), gaa: r.toi ? r.ga * 3600 / r.toi : null, sv10: div(r.sv10, r.sa10), sv5: div(r.sv5, r.sa5) })).map(r => ({ ...r, dsv: r.sv10 != null && r.svpct != null ? r.sv10 - r.svpct : null }));
-        sortTable(res, rows, [nameCol, { k: "team", label: "Team", html: r => teamLink(r.team) }, { k: "gp", label: "GP", n: 1 }, { k: "gs", label: "GS", n: 1 },
+        sortTable(res, rows, [nameCol, { k: "team", label: "Team", html: r => teamLink(r.team) }, formCol("goalies"), { k: "gp", label: "GP", n: 1 }, { k: "gs", label: "GS", n: 1 },
           { k: "rec", label: "Record", html: r => `${r.w}-${r.l}-${r.otl}`, sortVal: r => r.w }, { k: "sa", label: "SA", n: 1 }, { k: "ga", label: "GA", n: 1 },
           { k: "svpct", label: "SV%", n: 1, fmt: fmtSv }, { k: "gaa", label: "GAA", n: 1, fmt: v => fmt(v, 2) }, { k: "so", label: "SO", n: 1 },
           { k: "sv5", label: "L5 SV%", n: 1, fmt: fmtSv }, { k: "sv10", label: "L10 SV%", n: 1, fmt: fmtSv },
@@ -766,7 +790,7 @@ async function pageScreener(params) {
       } else {
         rows = rows.map(r => ({ ...r, pgp: r.p / r.gp, gpg: r.g / r.gp, sh: div(r.g, r.sog), sogpg: r.sog / r.gp, toigp: r.toi / r.gp,
           p10gp: r.gp10 ? r.p10 / r.gp10 : null, sog10gp: r.gp10 ? r.sog10 / r.gp10 : null, toi10gp: r.gp10 ? r.toi10 / r.gp10 : null })).map(r => ({ ...r, dp: r.p10gp != null ? r.p10gp - r.pgp : null, dtoi: r.toi10gp != null ? r.toi10gp - r.toigp : null }));
-        sortTable(res, rows, [nameCol, { k: "team", label: "Team", html: r => teamLink(r.team) }, { k: "pos", label: "Pos" }, { k: "gp", label: "GP", n: 1 },
+        sortTable(res, rows, [nameCol, { k: "team", label: "Team", html: r => teamLink(r.team) }, { k: "pos", label: "Pos" }, formCol("skaters"), { k: "gp", label: "GP", n: 1 },
           { k: "g", label: "G", n: 1 }, { k: "a", label: "A", n: 1 }, { k: "p", label: "P", n: 1 }, { k: "pgp", label: "P/GP", n: 1, fmt: v => fmt(v, 2) },
           { k: "sog", label: "SOG", n: 1 }, { k: "sh", label: "Sh%", n: 1, fmt: v => fmtPct(v) }, { k: "ppp", label: "PPP", n: 1 }, { k: "pm", label: "+/-", n: 1, fmt: v => fmtSigned(v) },
           { k: "hits", label: "Hits", n: 1 }, { k: "blk", label: "Blk", n: 1 }, { k: "toigp", label: "TOI/GP", n: 1, fmt: fmtToi },
@@ -840,6 +864,51 @@ async function pageCompare(params) {
   $("#cbody").appendChild(filterBar(f, { seasons, opps, onChange: render, resultLabel: isTeam ? "Result" : "Team result" }));
   $("#cbody").appendChild(body);
   render();
+}
+
+
+// ---------- trends
+async function pageTrends(params) {
+  const st = { season: +(params.get("season") || META.current_season), grp: "all", team: "all", activeOnly: true };
+  const render = async () => {
+    const lg = await load(`league/${st.season}.json`);
+    const form = lg.form || {};
+    const asOf = form.as_of;
+    const recent = d => !st.activeOnly || !asOf || (new Date(asOf) - new Date(d)) / 864e5 <= 10;
+    const sk = objs(lg.skaters), gk = objs(lg.goalies);
+    const info = {}; for (const r of [...sk, ...gk]) if (!info[r.player_id] || r.game_type === "R") info[r.player_id] = r;
+    const people = (kind) => Object.entries(form[kind] || {}).map(([id, f]) => ({ id: +id, ...f, ...(info[id] ? { name: info[id].name, team: info[id].team, pos: info[id].pos || "G" } : { name: "#" + id }) }))
+      .filter(r => recent(r.last_game) && (st.team === "all" || r.team === st.team) && (kind === "goalies" || st.grp === "all" || posGroup(r.pos) === st.grp));
+    const S = people("skaters"), G = people("goalies");
+    const T = Object.entries(form.teams || {}).map(([team, f]) => ({ team, ...f }));
+    const li = r => `<li><span>${r.team && !r.id ? teamLink(r.team) + ` <span class="muted">${esc(TEAM_BY[r.team]?.common_name || "")}</span>` : playerLink(r.id, r.name) + ` <span class="muted">${esc(r.pos || "")} · ${esc(r.team || "")}</span>`}</span>
+      <span>${formBadge(r.status)}</span><span class="why">${r.reasons.slice(0, 2).map(esc).join(" · ")}${r.flags?.length ? " " + flagChips(r.flags) : ""}</span></li>`;
+    const list = (title, rows, empty) => `<div class="card"><h2>${title}</h2>${rows.length ? `<ul class="trend-list">${rows.map(li).join("")}</ul>` : `<div class="muted">${empty}</div>`}</div>`;
+    const hot = arr => arr.filter(r => r.score >= 0.9).sort((a, b) => b.score - a.score);
+    const cold = arr => arr.filter(r => r.score <= -0.9).sort((a, b) => a.score - b.score);
+    const flagged = (arr, f) => arr.filter(r => r.flags?.includes(f)).sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
+    const opt = (arr, v) => arr.map(([k, l]) => `<option value="${k}" ${String(k) === String(v) ? "selected" : ""}>${l}</option>`).join("");
+    const counts = Object.fromEntries(Object.keys(FORM).map(k => [k, S.filter(r => r.status === k).length]));
+    app.innerHTML = h`
+      <div class="head"><div><h1>Trends</h1><div class="meta">Who's hot and who's cold${asOf ? ", as of " + fmtDate(asOf) : ""}. Recent games vs what we'd expect from that player or team, flagged only when the gap is too big to be ordinary noise.</div></div></div>
+      <div class="card filters">
+        <label>Season<select data-k="season">${opt([...META.seasons].reverse().map(x => [x, seasonLabel(x)]), st.season)}</select></label>
+        <label>Skaters<select data-k="grp">${opt([["all", "All"], ["F", "Forwards"], ["D", "Defense"]], st.grp)}</select></label>
+        <label>Team<select data-k="team">${opt([["all", "All"], ...TEAMS.map(t => [t.abbrev, t.abbrev])], st.team)}</select></label>
+        <label>Players<select data-k="activeOnly">${opt([["true", "Played in last 10 days"], ["false", "Everyone"]], String(st.activeOnly))}</select></label>
+        <span class="filter-note">${Object.entries(counts).map(([k, n]) => `${formBadge(k)} ${n}`).join(" &nbsp; ")}</span>
+      </div>
+      <div class="grid2">${list("Hottest skaters", hot(S).slice(0, 15), "Nobody is running well above expectation right now.")}${list("Coldest skaters", cold(S).slice(0, 15), "Nobody is running well below expectation right now.")}</div>
+      <div class="grid2">${list("Hot goalies", hot(G).slice(0, 8), "No goalie is well above expectation.")}${list("Cold goalies", cold(G).slice(0, 8), "No goalie is well below expectation.")}</div>
+      <div class="card"><h2>Teams</h2><div id="tt"></div></div>
+      <div class="grid3">${list("Likely to cool off", flagged([...S, ...T], "regression_risk").slice(0, 10), "None flagged.")}${list("Due to heat up", flagged([...S, ...T], "buy_low").slice(0, 10), "None flagged.")}${list("Role changes (ice time)", [...flagged(S, "role_up"), ...flagged(S, "role_down")].slice(0, 12), "None flagged.")}</div>
+      <div class="card muted" style="font-size:12px"><b>How this works.</b> For each player we set an expected rate from his earlier games this season, blended with last season (or the league average for his position) so a short sample can't swing it. The last 10 and last 5 games are compared with that expectation using exact odds, and the result becomes a score. +0.9 or more is Warming and +1.8 or more is Hot; the same thresholds below zero mean Cooling and Cold. Goalies use save % over their last 5 and 10 games, and teams use points % plus goal differential over the last 10. "Likely to cool" marks hot runs built on unsustainable shooting % (or, for teams, PDO while being outshot). "Due to heat up" marks the reverse. Even in a league with no real streaks, about 1 in 20 players would show as Hot or Cold by chance, so use the reasons to judge each case.</div>`;
+    sortTable($("#tt"), T, [{ k: "team", label: "Team", html: r => `${teamLink(r.team)} <span class="muted">${esc(TEAM_BY[r.team]?.common_name || "")}</span>` },
+      { k: "status", label: "Form", html: r => formBadge(r.status), sortVal: r => r.score }, { k: "score", label: "Score", n: 1, fmt: v => fmtSigned(v, 1) },
+      { k: "why", label: "Why", html: r => r.reasons.map(esc).join(" · ") + " " + flagChips(r.flags), csv: r => r.reasons.join(" | ") }], { sortKey: "score", csvName: `team-form-${st.season}` });
+    app.querySelectorAll("[data-k]").forEach(i => i.onchange = () => { const k = i.dataset.k; st[k] = k === "season" ? +i.value : k === "activeOnly" ? i.value === "true" : i.value; render(); });
+  };
+  await render();
 }
 
 // ---------- games list & box score
@@ -940,6 +1009,7 @@ async function route() {
     else if (parts[0] === "screener") await pageScreener(params);
     else if (parts[0] === "compare") await pageCompare(params);
     else if (parts[0] === "games") await pageGames(params);
+    else if (parts[0] === "trends") await pageTrends(params);
     else if (parts[0] === "game") await pageBox(parts[1]);
     else app.innerHTML = '<div class="empty">Page not found.</div>';
   } catch (e) {
