@@ -177,3 +177,18 @@ td.cold { background: var(--cold-bg); }
 
 .standings td:first-child { width: 45%; }
 .empty { padding: 30px; text-align: center; color: var(--text-muted); }
+
+/* league-rank tiers (diverging: blue = better, red = worse, gray = middle; always paired with a text label) */
+:root { --tier-elite: #184f95; --tier-above: #6da7ec; --tier-avg: #c3c2b7; --tier-below: #f09a9a; --tier-poor: #c53a3a; }
+:root[data-theme="dark"] { --tier-elite: #6da7ec; --tier-above: #2a5f9e; --tier-avg: #55544f; --tier-below: #8f4040; --tier-poor: #e66767; }
+@media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) { --tier-elite: #6da7ec; --tier-above: #2a5f9e; --tier-avg: #55544f; --tier-below: #8f4040; --tier-poor: #e66767; } }
+.t-elite { --tier: var(--tier-elite); } .t-above { --tier: var(--tier-above); } .t-avg { --tier: var(--tier-avg); }
+.t-below { --tier: var(--tier-below); } .t-poor { --tier: var(--tier-poor); }
+.tile[class*="t-"] { border-left: 5px solid var(--tier); }
+.tile .rk { font-size: 11px; color: var(--text-secondary); margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--grid); display: flex; flex-direction: column; gap: 1px; }
+.tile .rk .pos { font-variant-numeric: tabular-nums; }
+.tile .rk .tier { font-weight: 600; color: var(--text-primary); margin-right: 2px; }
+.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; background: var(--tier); margin-right: 4px; vertical-align: 0; }
+.rank-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--text-secondary); margin: 0 0 8px; }
+.rank-legend { display: flex; flex-wrap: wrap; gap: 12px; }
+.rank-basis select { padding: 2px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-0); color: var(--text-primary); font-size: 12px; margin-left: 4px; }

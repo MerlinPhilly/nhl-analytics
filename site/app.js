@@ -297,7 +297,84 @@ function commonSplits(resultKey, teamFirst = false) {
   ];
 }
 
-const tiles = items => `<div class="tiles">${items.map(([k, v, s]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`).join("")}</div>`;
+const tiles = items => `<div class="tiles">${items.map(([k, v, s, , rk]) => `<div class="tile ${rk ? "t-" + rk.tier[1] : ""}" ${rk ? `title="${esc(rankTitle(rk))}"` : ""}><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ""}${rk ? `<div class="rk"><span class="tier"><i class="sw"></i>${rk.tier[2]}</span><span class="pos">${rk.tied ? "T-" : ""}#${rk.rank} of ${rk.n} · ${ordinal(rk.pct)} pct</span></div>` : ""}</div>`).join("")}</div>`;
+
+// ------------------------------------------------------------------ league ranks for stat tiles
+// Tier bands by percentile. Color is never the only signal: every tile also prints the tier name and rank.
+const TIERS = [[90, "elite", "Elite"], [70, "above", "Above avg"], [30, "avg", "Average"], [10, "below", "Below avg"], [0, "poor", "Bottom 10%"]];
+const ordinal = n => { const v = n % 100; return n + (v >= 11 && v <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th"); };
+const rankTitle = rk => `Ranks #${rk.rank} of ${rk.n} on ${rk.basis} (${ordinal(rk.pct)} percentile${rk.lower ? ", lower is better" : ""})`;
+
+// mine(a): value from this player's filtered games; peer(r): same stat from a league season row
+const SK_RANK = {
+  g: { mine: a => div(a.g, a.gp), peer: r => r.g / r.gp, basis: "goals per game" },
+  a: { mine: a => div(a.a, a.gp), peer: r => r.a / r.gp, basis: "assists per game" },
+  p: { mine: a => a.ppg_rate, peer: r => r.p / r.gp, basis: "points per game" },
+  sog: { mine: a => a.sog_rate, peer: r => r.sog / r.gp, basis: "shots per game" },
+  sh: { mine: a => (a.sog >= 10 ? a.shpct : null), peer: r => (r.sog >= 20 ? r.g / r.sog : null), basis: "shooting % (min 20 shots)" },
+  ppp: { mine: a => (a.ppp == null ? null : div(a.ppp, a.gp)), peer: r => (r.ppp == null ? null : r.ppp / r.gp), basis: "PP points per game" },
+  pm: { mine: a => div(a.pm, a.gp), peer: r => r.pm / r.gp, basis: "plus/minus per game" },
+  toi: { mine: a => a.toi, peer: r => r.toi / r.gp, basis: "ice time per game" },
+  hits: { mine: a => div(a.hits, a.gp), peer: r => r.hits / r.gp, basis: "hits per game" },
+  blk: { mine: a => div(a.blk, a.gp), peer: r => r.blk / r.gp, basis: "blocks per game" },
+  pim: { mine: a => div(a.pim, a.gp), peer: r => r.pim / r.gp, basis: "PIM per game", lower: true },
+  ptg: { mine: a => div(a.pt_games, a.gp), peer: r => (r.pt_games == null ? null : r.pt_games / r.gp), basis: "share of games with a point" },
+  multi: { mine: a => div(a.multi, a.gp), peer: r => (r.multi == null ? null : r.multi / r.gp), basis: "multi-point games per game" },
+  gwg: { mine: a => (a.gwg == null ? null : div(a.gwg, a.gp)), peer: r => (r.gwg == null ? null : r.gwg / r.gp), basis: "game-winning goals per game" },
+};
+const G_RANK = {
+  rec: { mine: a => div(a.w, a.gp), peer: r => r.w / r.gp, basis: "wins per game played" },
+  sv: { mine: a => a.svpct, peer: r => div(r.sv, r.sa), basis: "save %" },
+  gaa: { mine: a => a.gaa, peer: r => (r.toi ? r.ga * 3600 / r.toi : null), basis: "goals-against average", lower: true },
+  so: { mine: a => div(a.so, a.gs), peer: r => div(r.so, r.gs), basis: "shutouts per start" },
+  sa: { mine: a => div(a.sa, a.gp), peer: r => r.sa / r.gp, basis: "shots faced per game (workload)" },
+  ev: { mine: a => a.evsv, peer: r => div(r.ev_sv, r.ev_sa), basis: "even-strength save %" },
+  pk: { mine: a => a.ppsv, peer: r => div(r.pp_sv, r.pp_sa), basis: "penalty-kill save %" },
+  qs: { mine: a => a.quality, peer: r => div(r.qs, r.gs), basis: "quality-start rate" },
+};
+
+function rankOne(mine, peerVals, lower) {
+  const vals = peerVals.filter(v => v != null && Number.isFinite(v));
+  if (mine == null || !Number.isFinite(mine) || vals.length < 5) return null;
+  const better = vals.filter(v => (lower ? v < mine : v > mine)).length;
+  const worse = vals.filter(v => (lower ? v > mine : v < mine)).length;
+  const ties = vals.length - better - worse;
+  const pct = Math.min(99, Math.max(1, Math.round(((worse + 0.5 * ties) / vals.length) * 100)));
+  return { rank: better + 1, n: vals.length + 1, pct, tied: ties > 0, tier: TIERS.find(t => pct >= t[0]) };
+}
+
+/** Peers for ranking: same season and game type, a minimum games played, and a comparison group. */
+async function rankContext(bio, isGoalie, season, type, vs) {
+  let league;
+  try { league = await load(`league/${season}.json`); } catch { return null; }
+  const rows = objs(isGoalie ? league.goalies : league.skaters).filter(r => r.game_type === type);
+  if (!rows.length) return null;
+  const maxGp = Math.max(...rows.map(r => r.gp));
+  const minGp = Math.max(1, Math.min(20, Math.round(maxGp * 0.25)));
+  const myPos = bio.pos || rows.find(r => r.player_id === bio.id)?.pos;
+  let peers = rows.filter(r => r.gp >= minGp && r.player_id !== bio.id);
+  let label;
+  if (isGoalie) label = "goalies";
+  else if (vs === "pos" && myPos) { peers = peers.filter(r => r.pos === myPos); label = { C: "centers", L: "left wings", R: "right wings", D: "defensemen" }[myPos] || myPos; }
+  else if (vs === "all") label = "skaters";
+  else { const grp = posGroup(myPos); peers = peers.filter(r => posGroup(r.pos) === grp); label = grp === "D" ? "defensemen" : "forwards"; }
+  return { peers, minGp, label, season, type };
+}
+function rankFor(ctx, defs, key, a) {
+  if (!ctx || !key || !defs[key]) return null;
+  const d = defs[key];
+  const r = rankOne(d.mine(a), ctx.peers.map(d.peer), d.lower);
+  return r && { ...r, basis: d.basis, lower: !!d.lower };
+}
+function rankHeader(ctx, isGoalie, vs, f) {
+  if (!ctx) return `<div class="rank-bar muted">League ranks unavailable for this selection.</div>`;
+  const narrowed = f.venue !== "all" || f.opp !== "all" || f.result !== "all" || f.rest !== "all" || f.month !== "all" || f.lastN || f.from || f.to || (f.seasons && f.seasons.length > 1) || !f.seasons;
+  return `<div class="rank-bar">
+    <span class="rank-legend">${TIERS.map(t => `<span class="t-${t[1]}"><i class="sw"></i>${t[2]}${t[0] ? ` <span class="muted">${t[0]}+</span>` : ""}</span>`).join("")}</span>
+    <span class="rank-basis">Ranked vs ${seasonLabel(ctx.season)} ${ctx.type === "P" ? "playoff" : "regular-season"} ${ctx.label} with ${ctx.minGp}+ GP (${ctx.peers.length}), on per-game rates
+      ${isGoalie ? "" : `<select id="rankvs" aria-label="Rank against"><option value="group" ${vs === "group" ? "selected" : ""}>Forwards / D</option><option value="pos" ${vs === "pos" ? "selected" : ""}>Same position</option><option value="all" ${vs === "all" ? "selected" : ""}>All skaters</option></select>`}
+      ${narrowed ? `<span class="muted"> · this player's numbers use your filters; league numbers are full-season</span>` : ""}</span></div>`;
+}
 const teamName = a => TEAM_BY[a]?.name || a;
 const teamLink = a => `<a href="#/team/${a}">${esc(a)}</a>`;
 const playerLink = (id, name) => `<a href="#/player/${id}">${esc(name)}</a>`;
@@ -388,7 +465,8 @@ async function pagePlayer(id) {
     <div id="fbar"></div><div id="body"></div>`;
 
   const body = $("#body");
-  let metric = isGoalie ? "svpct" : "points", win = 10;
+  let metric = isGoalie ? "svpct" : "points", win = 10, rankVs = "group";
+  const rankSeason = () => (f.seasons?.length ? Math.max(...f.seasons) : latest);
   const render = async () => {
     const fg = applyFilter(games, f, "team_result");
     $(".filter-note").textContent = `${fg.length} of ${games.length} games`;
@@ -397,9 +475,12 @@ async function pagePlayer(id) {
     });
     if (isGoalie) {
       const a = aggGoalie(fg);
+      const ctx = await rankContext(bio, true, rankSeason(), f.type === "P" ? "P" : "R", rankVs);
+      const T = items => tiles(items.map(([k, v, s, key]) => [k, v, s, key, rankFor(ctx, G_RANK, key, a)]));
       body.innerHTML = h`
-        ${tiles([["GP", a.gp, `${a.gs} starts`], ["Record", recordStr(a)], ["SV%", fmtSv(a.svpct)], ["GAA", fmt(a.gaa, 2)], ["Shutouts", a.so],
-          ["Shots against", a.sa, fmt(div(a.sa, a.gp), 1) + "/GP"], ["EV SV%", fmtSv(a.evsv)], ["PK SV%", fmtSv(a.ppsv)], ["Quality starts", fmtPct(a.quality, 0)]])}
+        ${rankHeader(ctx, true, rankVs, f)}
+        ${T([["GP", a.gp, `${a.gs} starts`], ["Record", recordStr(a), fmtPct(div(a.w, a.gp), 0) + " wins", "rec"], ["SV%", fmtSv(a.svpct), "", "sv"], ["GAA", fmt(a.gaa, 2), "", "gaa"], ["Shutouts", a.so, "", "so"],
+          ["Shots against", a.sa, fmt(div(a.sa, a.gp), 1) + "/GP", "sa"], ["EV SV%", fmtSv(a.evsv), "", "ev"], ["PK SV%", fmtSv(a.ppsv), "", "pk"], ["Quality starts", fmtPct(a.quality, 0), "", "qs"]])}
         <div class="card" style="margin-top:16px"><div class="chart-controls"><h2 style="margin:0">Trend</h2>
           <select id="metric">${Object.entries(GOALIE_METRICS).map(([k, [l]]) => `<option value="${k}" ${k === metric ? "selected" : ""}>${l}</option>`).join("")}</select>
           <select id="win">${[3, 5, 10, 20].map(w => `<option value="${w}" ${w === win ? "selected" : ""}>${w}-game rolling</option>`).join("")}</select></div>
@@ -420,11 +501,14 @@ async function pagePlayer(id) {
         { k: "team", label: "Team", html: r => teamLink(r.team) }, ...statCols("G")], { sortKey: "season", csvName: `${bio.name}-seasons` });
     } else {
       const a = aggSkater(fg);
+      const ctx = await rankContext(bio, false, rankSeason(), f.type === "P" ? "P" : "R", rankVs);
+      const T = items => tiles(items.map(([k, v, s, key]) => [k, v, s, key, rankFor(ctx, SK_RANK, key, a)]));
       body.innerHTML = h`
-        ${tiles([["GP", a.gp], ["Goals", a.g, fmt(a.gpg, 2) + "/GP"], ["Assists", a.a], ["Points", a.p, fmt(a.ppg_rate, 2) + "/GP"],
-          ["Shots", a.sog, fmt(a.sog_rate, 2) + "/GP"], ["Shooting %", fmtPct(a.shpct)], ["PP points", a.ppp ?? "–", `${a.ppgoals} PPG`], ["+/-", fmtSigned(a.pm)],
-          ["TOI/GP", fmtToi(a.toi)], ["Hits", a.hits, fmt(div(a.hits, a.gp), 2) + "/GP"], ["Blocks", a.blk], ["PIM", a.pim],
-          ["Point games", a.pt_games, fmtPct(div(a.pt_games, a.gp), 0)], ["Multi-pt games", a.multi], ["GWG", a.gwg ?? "–"], ["FO%", a.fo != null && a.fo > 0 ? fmtPct(a.fo) : "–"]])}
+        ${rankHeader(ctx, false, rankVs, f)}
+        ${T([["GP", a.gp], ["Goals", a.g, fmt(a.gpg, 2) + "/GP", "g"], ["Assists", a.a, fmt(div(a.a, a.gp), 2) + "/GP", "a"], ["Points", a.p, fmt(a.ppg_rate, 2) + "/GP", "p"],
+          ["Shots", a.sog, fmt(a.sog_rate, 2) + "/GP", "sog"], ["Shooting %", fmtPct(a.shpct), "", "sh"], ["PP points", a.ppp ?? "–", `${a.ppgoals} PPG`, "ppp"], ["+/-", fmtSigned(a.pm), "", "pm"],
+          ["TOI/GP", fmtToi(a.toi), "", "toi"], ["Hits", a.hits, fmt(div(a.hits, a.gp), 2) + "/GP", "hits"], ["Blocks", a.blk, fmt(div(a.blk, a.gp), 2) + "/GP", "blk"], ["PIM", a.pim, "", "pim"],
+          ["Point games", a.pt_games, fmtPct(div(a.pt_games, a.gp), 0), "ptg"], ["Multi-pt games", a.multi, "", "multi"], ["GWG", a.gwg ?? "–", "", "gwg"], ["FO%", a.fo != null && a.fo > 0 ? fmtPct(a.fo) : "–"]])}
         <div class="grid2" style="margin-top:16px">
           <div class="card"><div class="chart-controls"><h2 style="margin:0">Trend</h2>
             <select id="metric">${Object.entries(SKATER_METRICS).map(([k, [l]]) => `<option value="${k}" ${k === metric ? "selected" : ""}>${l}</option>`).join("")}</select>
@@ -452,6 +536,7 @@ async function pagePlayer(id) {
     }
     $("#metric").onchange = e => { metric = e.target.value; render(); };
     $("#win").onchange = e => { win = +e.target.value; render(); };
+    const rv = $("#rankvs"); if (rv) rv.onchange = e => { rankVs = e.target.value; render(); };
   };
   $("#fbar").appendChild(filterBar(f, { seasons, opps, onChange: render }));
   render();
@@ -514,6 +599,32 @@ async function percentiles(bio, season, type) {
 }
 
 // ---------- team
+const T_RANK = {
+  rec: { mine: a => a.ptspct, peer: r => r.pts / (2 * r.gp), basis: "points %" },
+  gf: { mine: a => a.gfpg, peer: r => r.gf / r.gp, basis: "goals for per game" },
+  ga: { mine: a => a.gapg, peer: r => r.ga / r.gp, basis: "goals against per game", lower: true },
+  diff: { mine: a => div(a.diff, a.gp), peer: r => (r.gf - r.ga) / r.gp, basis: "goal differential per game" },
+  sf: { mine: a => a.sfpg, peer: r => r.sf / r.gp, basis: "shots for per game" },
+  sa: { mine: a => a.sapg, peer: r => r.sa / r.gp, basis: "shots against per game", lower: true },
+  sfpct: { mine: a => a.sfpct, peer: r => div(r.sf, r.sf + r.sa), basis: "shot share" },
+  pp: { mine: a => a.pp, peer: r => div(r.ppg, r.ppo), basis: "power-play %" },
+  pk: { mine: a => a.pk, peer: r => (r.pko ? 1 - r.pkga / r.pko : null), basis: "penalty-kill %" },
+  sh: { mine: a => a.shpct, peer: r => div(r.gf, r.sf), basis: "shooting %" },
+  sv: { mine: a => a.svpct, peer: r => (r.sa ? 1 - r.ga / r.sa : null), basis: "save %" },
+};
+async function teamRankContext(abbr, season, type) {
+  let league;
+  try { league = await load(`league/${season}.json`); } catch { return null; }
+  const peers = objs(league.teams).filter(r => r.game_type === type && r.team !== abbr && r.gp > 0);
+  return peers.length >= 5 ? { peers, season, type } : null;
+}
+function teamRankHeader(ctx, f) {
+  if (!ctx) return `<div class="rank-bar muted">League ranks unavailable for this selection.</div>`;
+  const narrowed = f.venue !== "all" || f.opp !== "all" || f.result !== "all" || f.rest !== "all" || f.month !== "all" || f.lastN || f.from || f.to || (f.seasons && f.seasons.length > 1) || !f.seasons;
+  return `<div class="rank-bar"><span class="rank-legend">${TIERS.map(t => `<span class="t-${t[1]}"><i class="sw"></i>${t[2]}${t[0] ? ` <span class="muted">${t[0]}+</span>` : ""}</span>`).join("")}</span>
+    <span class="rank-basis">Ranked vs all ${ctx.peers.length + 1} teams, ${seasonLabel(ctx.season)} ${ctx.type === "P" ? "playoffs" : "regular season"}, per-game rates${narrowed ? `<span class="muted"> · this team's numbers use your filters; league numbers are full-season</span>` : ""}</span></div>`;
+}
+
 async function pageTeam(abbr) {
   const doc = await load(`teams/${abbr}.json`);
   const games = objs(doc.games);
@@ -530,15 +641,18 @@ async function pageTeam(abbr) {
       <div><a class="btn" href="#/compare?ta=${abbr}">Compare with…</a></div></div>
     <div id="fbar"></div><div id="body"></div>`;
   const body = $("#body");
-  const render = () => {
+  const render = async () => {
     const fg = applyFilter(games, f, "result");
     $(".filter-note").textContent = `${fg.length} of ${games.length} games`;
     const a = aggTeam(fg);
     const pdo = a.shpct != null && a.svpct != null ? (a.shpct + a.svpct) * 1000 : null;
+    const ctx = await teamRankContext(abbr, f.seasons?.length ? Math.max(...f.seasons) : latest, f.type === "P" ? "P" : "R");
+    const T = items => tiles(items.map(([k, v, s, key]) => [k, v, s, key, rankFor(ctx, T_RANK, key, a)]));
     body.innerHTML = h`
-      ${tiles([["Record", recordStr(a), `${a.pts} pts · ${fmtSv(a.ptspct)}`], ["GF/GP", fmt(a.gfpg, 2)], ["GA/GP", fmt(a.gapg, 2)], ["Goal diff", fmtSigned(a.diff)],
-        ["SF/GP", fmt(a.sfpg, 1)], ["SA/GP", fmt(a.sapg, 1)], ["Shot share", fmtPct(a.sfpct)], ["PP%", fmtPct(a.pp)], ["PK%", fmtPct(a.pk)],
-        ["Shooting %", fmtPct(a.shpct)], ["Save %", fmtSv(a.svpct)], ["PDO", fmt(pdo, 0), "~1000 = average luck"]])}
+      ${teamRankHeader(ctx, f)}
+      ${T([["Record", recordStr(a), `${a.pts} pts · ${fmtSv(a.ptspct)}`, "rec"], ["GF/GP", fmt(a.gfpg, 2), "", "gf"], ["GA/GP", fmt(a.gapg, 2), "", "ga"], ["Goal diff", fmtSigned(a.diff), fmtSigned(div(a.diff, a.gp), 2) + "/GP", "diff"],
+        ["SF/GP", fmt(a.sfpg, 1), "", "sf"], ["SA/GP", fmt(a.sapg, 1), "", "sa"], ["Shot share", fmtPct(a.sfpct), "", "sfpct"], ["PP%", fmtPct(a.pp), "", "pp"], ["PK%", fmtPct(a.pk), "", "pk"],
+        ["Shooting %", fmtPct(a.shpct), "", "sh"], ["Save %", fmtSv(a.svpct), "", "sv"], ["PDO", fmt(pdo, 0), "~1000 = average luck"]])}
       <div class="card" style="margin-top:16px"><h2>Results <span class="muted">· oldest → newest</span></h2><div class="strip">${fg.map(g => `<a class="${g.result}" href="#/game/${g.game_id}" title="${shortDate(g.game_date)} ${g.is_home ? "vs" : "@"} ${g.opp_abbrev} ${g.gf}-${g.ga} ${g.decided_in !== "REG" ? "(" + g.decided_in + ")" : ""}">${g.result === "OTL" ? "O" : g.result}</a>`).join("")}</div>
         <div class="legend" style="margin-top:8px"><span>W = win</span><span>L = regulation loss</span><span>O = OT/shootout loss</span></div></div>
       <div class="card"><div class="chart-controls"><h2 style="margin:0">Trend</h2>

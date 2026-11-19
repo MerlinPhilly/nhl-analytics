@@ -76,6 +76,8 @@ SELECT g.player_id, coalesce(any_value(p.full_name), any_value(g.name)) AS name,
        count(*) FILTER (rn <= 10) AS gp10, sum(points) FILTER (rn <= 10) AS p10,
        sum(goals) FILTER (rn <= 10) AS g10, sum(sog) FILTER (rn <= 10) AS sog10,
        sum(toi_sec) FILTER (rn <= 10) AS toi10,
+       count(*) FILTER (points > 0) AS pt_games, count(*) FILTER (points >= 2) AS multi,
+       sum(giveaways) AS gv, sum(takeaways) AS tk,
        max(game_date) AS last_game
 FROM g LEFT JOIN players p USING (player_id)
 WHERE g.season = ?
@@ -99,6 +101,8 @@ SELECT g.player_id, coalesce(any_value(p.full_name), any_value(g.name)) AS name,
        sum(shots_against) FILTER (rn <= 5) AS sa5, sum(saves) FILTER (rn <= 5) AS sv5,
        sum(shots_against) FILTER (rn <= 10) AS sa10, sum(saves) FILTER (rn <= 10) AS sv10,
        count(*) FILTER (rn <= 10) AS gp10,
+       sum(ev_saves) AS ev_sv, sum(ev_shots) AS ev_sa, sum(pp_saves) AS pp_sv, sum(pp_shots) AS pp_sa,
+       count(*) FILTER (started AND shots_against > 0 AND saves::DOUBLE / shots_against >= 0.9) AS qs,
        max(game_date) AS last_game
 FROM g LEFT JOIN players p USING (player_id)
 WHERE g.season = ?
