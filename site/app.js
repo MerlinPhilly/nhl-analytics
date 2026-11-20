@@ -9,7 +9,8 @@ const cache = new Map();
 // ------------------------------------------------------------------ utils
 async function load(path) {
   if (cache.has(path)) return cache.get(path);
-  const p = fetch(`${DATA}/${path}`).then(r => {
+  // "no-cache" = always check with the server for a newer copy (cheap: unchanged files aren't re-downloaded)
+  const p = fetch(`${DATA}/${path}`, { cache: "no-cache" }).then(r => {
     if (!r.ok) throw new Error(`${r.status} ${path}`);
     return r.json();
   });

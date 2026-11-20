@@ -50,6 +50,8 @@ jobs:
         run: |
           mkdir -p _site
           cp -r site/* _site/
+          # Stamp asset URLs with the commit so browsers load the new version right away
+          sed -i "s/app.js\"/app.js?v=${GITHUB_SHA::8}\"/; s/style.css\"/style.css?v=${GITHUB_SHA::8}\"/" _site/index.html
           python -m nhl.export --out _site/data
 
       - name: Record run status
