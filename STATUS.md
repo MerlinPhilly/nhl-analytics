@@ -1,6 +1,6 @@
 # Data status
 
-- Last refresh: 2026-11-22T17:51:05+00:00
+- Last refresh: 2026-11-22T20:00:00+00:00
 - Games through: 2026-11-21
 - Games: 7,365
 - Skater game rows: 265,081
