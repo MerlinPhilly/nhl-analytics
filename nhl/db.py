@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS teams (
     abbrev VARCHAR PRIMARY KEY, name VARCHAR, common_name VARCHAR, place VARCHAR,
     conference VARCHAR, division VARCHAR
 );
+CREATE TABLE IF NOT EXISTS upcoming_games (
+    game_id BIGINT PRIMARY KEY, season INTEGER, game_type VARCHAR, game_date DATE,
+    start_utc VARCHAR, home_abbrev VARCHAR, away_abbrev VARCHAR, game_state VARCHAR
+);
+-- Full NHL career by team (from each player's NHL.com profile), reaching back
+-- before the seasons loaded here. Regular season + playoffs.
+CREATE TABLE IF NOT EXISTS player_career_teams (
+    player_id BIGINT, team_name VARCHAR, gp INTEGER, first_season INTEGER, last_season INTEGER,
+    PRIMARY KEY (player_id, team_name)
+);
 CREATE TABLE IF NOT EXISTS run_log (
     run_at TIMESTAMP DEFAULT current_timestamp, command VARCHAR, detail VARCHAR
 );

@@ -83,6 +83,26 @@ class League:
         self.extras: list[dict] = []
         for season in SEASONS:
             self._schedule(season)
+        # Upcoming (not yet played) games for the next three weeks after the last played day.
+        self.future: dict[int, dict] = {}
+        abbrevs = list(TEAMS)
+        d, n = SEASONS[20262027][1] + dt.timedelta(days=1), 9000
+        while d <= dt.date.today() + dt.timedelta(days=21):
+            pool = abbrevs[:]
+            rnd.shuffle(pool)
+            for _ in range(rnd.randint(3, 8)):
+                h, a = pool.pop(), pool.pop()
+                gid = 2026020000 + n
+                self.future[gid] = {"id": gid, "season": 20262027, "gameType": 2, "date": d, "home": h, "away": a}
+                n += 1
+            d += dt.timedelta(days=1)
+        # Career history before the loaded seasons, for some players (tests the NHL.com profile path).
+        self.history: dict[int, list] = {}
+        for pid in rnd.sample(sorted(self.players), 60):
+            if self.players[pid]["pos"] == "G":
+                continue
+            old = rnd.choice(abbrevs)
+            self.history[pid] = [(20182019, old, 82), (20192020, old, 70)]
 
     def _schedule(self, season: int):
         rnd = self.rnd
@@ -200,6 +220,10 @@ class League:
                       "homeTeam": self._team_obj(g, "home"), "awayTeam": self._team_obj(g, "away"),
                       "gameOutcome": {"lastPeriodType": g["last"]}}
                      for g in self.games.values() if g["date"] == d]
+            games += [{"id": g["id"], "season": g["season"], "gameType": g["gameType"], "gameState": "FUT",
+                       "startTimeUTC": f"{d}T23:30:00Z",
+                       "homeTeam": {"id": 1, "abbrev": g["home"]}, "awayTeam": {"id": 2, "abbrev": g["away"]}}
+                      for g in self.future.values() if g["date"] == d]
             week.append({"date": d.isoformat(), "numberOfGames": len(games), "games": games})
         return {"nextStartDate": (date + dt.timedelta(days=7)).isoformat(),
                 "previousStartDate": (date - dt.timedelta(days=7)).isoformat(), "gameWeek": week}
@@ -271,7 +295,20 @@ class League:
                 "firstName": {"default": p["first"]}, "lastName": {"default": p["last"]},
                 "sweaterNumber": p["sweater"], "position": p["pos"], "heightInInches": p["h"],
                 "weightInPounds": p["w"], "birthDate": p["birth"].isoformat(),
-                "birthCountry": "CAN", "shootsCatches": p["shoots"]}
+                "birthCountry": "CAN", "shootsCatches": p["shoots"], "seasonTotals": self._totals(pid)}
+
+    def _totals(self, pid: int) -> list:
+        rows = []
+        name = lambda t: f"{TEAMS[t][0]} {TEAMS[t][1]}"
+        for season, team, gp in self.history.get(pid, []):
+            rows.append({"season": season, "gameTypeId": 2, "leagueAbbrev": "NHL", "teamName": {"default": name(team)}, "gamesPlayed": gp})
+        rows.append({"season": 20202021, "gameTypeId": 2, "leagueAbbrev": "AHL", "teamName": {"default": "Somewhere"}, "gamesPlayed": 60})
+        for season, roster in self.rosters.items():
+            team = [t for t, r in roster.items() if pid in r][0]
+            gp = sum(1 for g in self.games.values() if g["season"] == season and g["gameType"] == 2
+                     and team in (g["home"], g["away"]))
+            rows.append({"season": season, "gameTypeId": 2, "leagueAbbrev": "NHL", "teamName": {"default": name(team)}, "gamesPlayed": gp})
+        return rows
 
     def standings(self) -> dict:
         return {"standings": [{"teamAbbrev": {"default": t}, "teamName": {"default": f"{v[0]} {v[1]}"},

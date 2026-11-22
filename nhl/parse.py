@@ -66,6 +66,7 @@ def schedule_games(week: dict) -> list[dict]:
                 "game_type": GAME_TYPES[gt],
                 "game_date": day.get("date") or (g.get("gameDate")),
                 "game_state": g.get("gameState"),
+                "start_utc": g.get("startTimeUTC"),
                 "is_final": g.get("gameState") in FINAL_STATES,
                 "home_abbrev": first(g.get("homeTeam", {}), "abbrev"),
                 "away_abbrev": first(g.get("awayTeam", {}), "abbrev"),
@@ -239,6 +240,24 @@ def parse_player(d: dict) -> dict:
         "sweater": d.get("sweaterNumber"),
         "current_team": d.get("currentTeamAbbrev"), "is_active": d.get("isActive"),
     }
+
+
+def parse_career(d: dict) -> list[dict]:
+    """NHL games played per team across a player's whole career (seasonTotals)."""
+    pid = d.get("playerId")
+    teams: dict[str, dict] = {}
+    for st in d.get("seasonTotals") or []:
+        if st.get("leagueAbbrev") != "NHL" or st.get("gameTypeId") not in (2, 3):
+            continue
+        name = txt(st.get("teamName"))
+        season = st.get("season")
+        if not name or not isinstance(season, int):
+            continue
+        t = teams.setdefault(name, {"gp": 0, "first": season, "last": season})
+        t["gp"] += st.get("gamesPlayed") or 0
+        t["first"], t["last"] = min(t["first"], season), max(t["last"], season)
+    return [{"player_id": pid, "team_name": k, "gp": v["gp"], "first_season": v["first"],
+             "last_season": v["last"]} for k, v in teams.items()]
 
 
 # ---------------------------------------------------------------- standings

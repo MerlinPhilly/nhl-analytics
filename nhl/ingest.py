@@ -104,6 +104,12 @@ def load_players(con, client: NHLClient, refresh_current: bool = False) -> int:
         SELECT DISTINCT player_id FROM (
             SELECT player_id FROM skater_games UNION SELECT player_id FROM goalie_games)
         WHERE player_id NOT IN (SELECT player_id FROM players)""").fetchall()]
+    # Current players without career-by-team history yet (one-time catch-up).
+    missing += [r[0] for r in con.execute("""
+        SELECT DISTINCT player_id FROM (
+            SELECT player_id, season FROM skater_games UNION ALL SELECT player_id, season FROM goalie_games)
+        WHERE season = (SELECT max(season) FROM games)
+          AND player_id NOT IN (SELECT DISTINCT player_id FROM player_career_teams)""").fetchall()]
     if refresh_current:
         # Re-pull a rotating 1/7 of this season's players so team changes show up.
         wd = dt.date.today().weekday()
@@ -117,15 +123,31 @@ def load_players(con, client: NHLClient, refresh_current: bool = False) -> int:
     if not ids:
         return 0
     log.info("fetching %d player bios", len(ids))
-    rows = []
+    rows, career = [], []
     with ThreadPoolExecutor(WORKERS) as pool:
         futures = {pool.submit(client.player_landing, pid): pid for pid in ids}
         for f in as_completed(futures):
             try:
-                rows.append(parse.parse_player(f.result()))
+                d = f.result()
+                rows.append(parse.parse_player(d))
+                career.extend(parse.parse_career(d))
             except Exception as e:
                 log.warning("player %s failed: %s", futures[f], e)
+    db.upsert(con, "player_career_teams", career)
     return db.upsert(con, "players", rows)
+
+
+def load_upcoming(con, client: NHLClient, days: int = 14) -> int:
+    """Store the next two weeks of scheduled games (replaced each run)."""
+    today = dt.date.today()
+    try:
+        games = scan_schedule(client, today, today + dt.timedelta(days=days))
+    except Exception as e:
+        log.warning("upcoming schedule failed: %s", e)
+        return 0
+    rows = [g for g in games if not g["is_final"]]
+    con.execute("DELETE FROM upcoming_games")
+    return db.upsert(con, "upcoming_games", rows)
 
 
 def load_teams(con, client: NHLClient) -> int:
@@ -156,6 +178,7 @@ def cmd_backfill(con, client, seasons: list[str], force: bool = False) -> None:
         db.log_run(con, "backfill", f"{season}: {n} games")
     n = load_players(con, client)
     log.info("player bios loaded: %d", n)
+    log.info("upcoming games: %d", load_upcoming(con, client))
 
 
 def cmd_daily(con, client, days: int = 3) -> None:
@@ -173,7 +196,8 @@ def cmd_daily(con, client, days: int = 3) -> None:
             load_extras(con, client,
                         f'seasonId={season} and gameTypeId={gt} and gameDate>="{start.isoformat()}"')
     p = load_players(con, client, refresh_current=True)
-    db.log_run(con, "daily", f"{start}→{today}: {n} games, {p} players")
+    u = load_upcoming(con, client)
+    db.log_run(con, "daily", f"{start}→{today}: {n} games, {p} players, {u} upcoming")
     log.info("daily: %d games (%s → %s), %d player bios", n, start, today, p)
 
 

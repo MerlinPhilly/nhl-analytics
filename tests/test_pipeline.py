@@ -65,5 +65,11 @@ def test_backfill_daily_export(env):
     # random mock league: most players should read as steady, extremes should be rare
     assert statuses.count("steady") / len(statuses) > 0.5
     assert (statuses.count("hot") + statuses.count("cold")) / len(statuses) < 0.15
+    up = json.load(open(out / "upcoming.json"))
+    assert up["games"]["rows"], "upcoming schedule should be loaded"
+    assert up["revenge"], "mock has traded players and pre-2021 history, so revenge games must exist"
+    assert all(r["team"] != r["opp"] and r["gp_with"] >= up["min_gp"] for r in up["revenge"])
+    # career history from before the loaded seasons is counted (NHL.com profile path)
+    assert any(r["last_season_with"] < 20212022 for r in up["revenge"])
     some = pl["rows"][0][0]
     assert (out / "players" / f"{some}.json").exists()

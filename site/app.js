@@ -284,6 +284,12 @@ function statCols(kind) {
     { k: "shpct", label: "Sh%", n: 1, fmt: v => fmtPct(v) }, { k: "ppp", label: "PPP", n: 1 }, { k: "pm", label: "+/-", n: 1, fmt: v => fmtSigned(v) },
     { k: "hits", label: "Hits", n: 1 }, { k: "blk", label: "Blk", n: 1 }, { k: "pim", label: "PIM", n: 1 }, { k: "toi", label: "TOI/GP", n: 1, fmt: fmtToi }];
 }
+function withFormerSplit(defs, former) {
+  const f80 = new Map((former || []).filter(f => f.gp >= REVENGE_DEFAULT).map(f => [f.team, f.gp]));
+  if (!f80.size) return defs;
+  return [...defs, { key: "former", label: "Former teams", fn: g => (f80.has(g.opp_abbrev) ? `vs ${g.opp_abbrev} (former team, ${f80.get(g.opp_abbrev)} GP)` : "All other opponents"),
+    order: k => (k === "All other opponents" ? "zz" : k) }];
+}
 function commonSplits(resultKey, teamFirst = false) {
   return [
     { key: "season", label: "Season", fn: g => seasonLabel(g.season) },
@@ -400,8 +406,15 @@ async function pageHome() {
     <div class="head"><div><h1>${seasonLabel(season)} season</h1><div class="meta">Through ${lastDate ? fmtDate(lastDate) : "–"} · ${META.counts.games.toLocaleString()} games loaded across ${META.seasons.length} seasons</div></div></div>
     <div class="card"><h2>Latest results ${lastDate ? `<span class="muted">· ${fmtDate(lastDate)}</span>` : ""}</h2><div class="games-list">${gl.filter(g => g.game_date === lastDate).map(gameCard).join("") || '<div class="empty">No games yet.</div>'}</div></div>
     <div class="grid2" id="leaders"></div>
+    <div class="card" id="home-rv"><h2>Revenge games this week <a href="#/trends" style="font-size:12px;font-weight:400;margin-left:6px">More →</a></h2><div class="muted">Loading…</div></div>
     <div class="card"><h2>Standings</h2><div class="grid2" id="standings"></div></div>`;
 
+  loadUpcoming().then(up => {
+    const el = $("#home-rv"); if (!el) return;
+    const limit = new Date(); limit.setDate(limit.getDate() + 7);
+    const rows = (up?.revenge || []).filter(r => r.gp_with >= REVENGE_DEFAULT && new Date(r.date + "T12:00:00") <= limit);
+    el.querySelector(".muted").outerHTML = `<div class="muted" style="font-size:12px;margin-bottom:4px">Players facing a team they played ${REVENGE_DEFAULT}+ games for.</div>` + revengeList(rows.slice(0, 10));
+  });
   const L = $("#leaders");
   const leader = (title, rows, valFmt, sub) => `<div class="card"><h2>${title}</h2><table><tbody>${rows.map((r, i) =>
     `<tr><td class="muted" style="width:24px">${i + 1}</td><td>${playerLink(r.player_id, r.name)} <span class="muted">${r.team}</span></td><td class="n"><b>${valFmt(r)}</b></td>${sub ? `<td class="n muted">${sub(r)}</td>` : ""}</tr>`).join("")}</tbody></table></div>`;
@@ -463,8 +476,18 @@ async function pagePlayer(id) {
         ${bio.height_in ? ` · ${Math.floor(bio.height_in / 12)}'${bio.height_in % 12}"` : ""}${bio.weight_lb ? `, ${bio.weight_lb} lb` : ""}
         ${bio.birth_country ? ` · ${esc(bio.birth_country)}` : ""}</div>
       <div class="meta">${games.length} games loaded · ${seasons.map(seasonLabel).join(", ")}${teamsPlayed.length > 1 ? " · Teams: " + teamsPlayed.map(teamLink).join(", ") : ""}</div>
+      <div class="meta" id="nextgame"></div>
     </div><div><a class="btn" href="#/compare?a=${id}">Compare with…</a></div></div>
     <div id="form"></div><div id="fbar"></div><div id="body"></div>`;
+  const former = (doc.former_teams || []);
+  loadUpcoming().then(up => {
+    const el = $("#nextgame"); if (!el || !up || !team) return;
+    const [ng] = nextGamesFor(up, team, 1);
+    if (!ng) return;
+    const opp = ng.home_abbrev === team ? ng.away_abbrev : ng.home_abbrev;
+    const f = former.find(x => x.team === opp);
+    el.innerHTML = `Next game: <b>${fmtGameTime(ng.game_date, ng.start_utc)}</b> ${ng.home_abbrev === team ? "vs" : "@"} ${teamLink(opp)}${f && f.gp >= REVENGE_DEFAULT ? " " + revengeBadge(f.gp, opp, f.last_season) : ""}`;
+  });
   formFor(isGoalie ? "goalies" : "skaters", id, latest).then(({ f: fm, asOf }) => { const el = $("#form"); if (el) el.innerHTML = formCard(fm, asOf, latest, isGoalie ? "goalie" : "skater"); });
 
   const body = $("#body");
@@ -492,7 +515,7 @@ async function pagePlayer(id) {
         <div class="card"><h2>Game log</h2><div id="log"></div></div>
         <div class="card"><h2>By season</h2><div id="career"></div></div>`;
       drawTrendGoalie(fg, metric, win);
-      splitsBlock($("#splits"), fg, "G", commonSplits("team_result"));
+      splitsBlock($("#splits"), fg, "G", withFormerSplit(commonSplits("team_result"), former));
       sortTable($("#log"), [...fg].reverse(), [
         { k: "game_date", label: "Date", html: r => `<a href="#/game/${r.game_id}">${shortDate(r.game_date)}</a> <span class="muted">${String(r.season).slice(2, 4)}-${String(r.season).slice(6)}</span>`, sortVal: r => r.game_date },
         { k: "opp_abbrev", label: "Opp", html: oppCell }, { k: "decision", label: "Dec" }, { k: "started", label: "GS", fmt: v => (v ? "✓" : "") },
@@ -524,7 +547,7 @@ async function pagePlayer(id) {
         <div class="card"><h2>By season</h2><div id="career"></div></div>`;
       drawTrendSkater(fg, metric, win);
       percentiles(bio, f.seasons?.length === 1 ? f.seasons[0] : latest, f.type === "P" ? "P" : "R");
-      splitsBlock($("#splits"), fg, "S", commonSplits("team_result"));
+      splitsBlock($("#splits"), fg, "S", withFormerSplit(commonSplits("team_result"), former));
       sortTable($("#log"), [...fg].reverse(), [
         { k: "game_date", label: "Date", html: r => `<a href="#/game/${r.game_id}">${shortDate(r.game_date)}</a> <span class="muted">${String(r.season).slice(2, 4)}-${String(r.season).slice(6)}</span>`, sortVal: r => r.game_date, csv: r => r.game_date },
         { k: "opp_abbrev", label: "Opp", html: oppCell, csv: r => (r.is_home ? "vs " : "@ ") + r.opp_abbrev },
@@ -602,6 +625,25 @@ async function percentiles(bio, season, type) {
 }
 
 
+// ------------------------------------------------------------------ upcoming games & revenge games
+const REVENGE_DEFAULT = 80;
+const fmtGameTime = (date, startUtc) => {
+  const d = new Date(date + "T12:00:00");
+  const day = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const t = startUtc ? new Date(startUtc).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "";
+  return t ? `${day} · ${t}` : day;
+};
+async function loadUpcoming() { try { return await load("upcoming.json"); } catch { return null; } }
+const nextGamesFor = (up, team, n = 5) => objs(up?.games).filter(g => g.home_abbrev === team || g.away_abbrev === team).slice(0, n);
+const revengeBadge = (gp, team, last) => `<span class="form f-warming" title="Played ${gp} NHL games for ${esc(team)}${last ? " (last in " + seasonLabel(last) + ")" : ""}">↩ Revenge game · ${gp} GP with ${esc(team)}</span>`;
+const vsLine = v => (!v ? "" : v.svpct !== undefined ? `${fmtSv(v.svpct)} SV% in ${v.gp} GP` : `${v.g} G, ${v.a} A, ${v.p} P in ${v.gp} GP`);
+function revengeList(rows, { showDate = true } = {}) {
+  if (!rows.length) return `<div class="muted">None in this window.</div>`;
+  return `<ul class="trend-list">${rows.map(r => `<li><span>${playerLink(r.player_id, r.name)} <span class="muted">${esc(r.pos || "")} · ${esc(r.team)}</span>
+    ${r.is_home ? "vs" : "@"} <b>${teamLink(r.opp)}</b></span><span class="muted">${showDate ? fmtGameTime(r.date, r.start_utc) : ""}</span>
+    <span class="why">${r.gp_with} games with ${esc(r.opp)}${r.last_season_with ? " (last in " + seasonLabel(r.last_season_with) + ")" : ""}${r.vs ? " · vs them since 2021-22: " + vsLine(r.vs) : ""}</span></li>`).join("")}</ul>`;
+}
+
 // ------------------------------------------------------------------ form (hot / cold)
 const FORM = { hot: ["🔥", "Hot"], warming: ["▲", "Warming"], steady: ["–", "Steady"], cooling: ["▼", "Cooling"], cold: ["❄", "Cold"] };
 const FORM_ORDER = { hot: 4, warming: 3, steady: 2, cooling: 1, cold: 0 };
@@ -660,7 +702,18 @@ async function pageTeam(abbr) {
   app.innerHTML = h`
     <div class="head"><div><h1>${esc(t.name || abbr)}</h1><div class="meta">${t.division ? esc(t.division) + " Division · " + esc(t.conference) + " Conference · " : ""}${games.length} games loaded</div></div>
       <div><a class="btn" href="#/compare?ta=${abbr}">Compare with…</a></div></div>
-    <div id="form"></div><div id="fbar"></div><div id="body"></div>`;
+    <div class="grid2"><div id="form"></div><div id="upcoming"></div></div><div id="fbar"></div><div id="body"></div>`;
+  loadUpcoming().then(up => {
+    const el = $("#upcoming"); if (!el || !up) return;
+    const ng = nextGamesFor(up, abbr, 6);
+    const rv = (up.revenge || []).filter(r => r.gp_with >= REVENGE_DEFAULT && (r.team === abbr || r.opp === abbr));
+    el.innerHTML = `<div class="card"><h2>Upcoming</h2>${ng.length ? `<table><tbody>${ng.map(g => {
+      const opp = g.home_abbrev === abbr ? g.away_abbrev : g.home_abbrev;
+      const ours = rv.filter(r => r.game_id === g.game_id && r.team === abbr), theirs = rv.filter(r => r.game_id === g.game_id && r.opp === abbr);
+      return `<tr><td>${fmtGameTime(g.game_date, g.start_utc)}</td><td>${g.home_abbrev === abbr ? "vs" : "@"} ${teamLink(opp)}</td><td class="sec" style="white-space:normal">${[
+        ...ours.map(r => `↩ ${playerLink(r.player_id, r.name)} faces his old team (${r.gp_with} GP)`),
+        ...theirs.map(r => `↩ ${opp}'s ${playerLink(r.player_id, r.name)} returns to face ${abbr} (${r.gp_with} GP here)`)].join("<br>")}</td></tr>`; }).join("")}</tbody></table>` : '<div class="muted">No games in the next two weeks.</div>'}</div>`;
+  });
   formFor("teams", abbr, latest).then(({ f: fm, asOf }) => { const el = $("#form"); if (el) el.innerHTML = formCard(fm, asOf, latest, "team"); });
   const body = $("#body");
   const render = async () => {
@@ -870,7 +923,7 @@ async function pageCompare(params) {
 
 // ---------- trends
 async function pageTrends(params) {
-  const st = { season: +(params.get("season") || META.current_season), grp: "all", team: "all", activeOnly: true };
+  const st = { season: +(params.get("season") || META.current_season), grp: "all", team: "all", activeOnly: true, rvgp: REVENGE_DEFAULT };
   const render = async () => {
     const lg = await load(`league/${st.season}.json`);
     const form = lg.form || {};
@@ -901,6 +954,9 @@ async function pageTrends(params) {
       </div>
       <div class="grid2">${list("Hottest skaters", hot(S).slice(0, 15), "Nobody is running well above expectation right now.")}${list("Coldest skaters", cold(S).slice(0, 15), "Nobody is running well below expectation right now.")}</div>
       <div class="grid2">${list("Hot goalies", hot(G).slice(0, 8), "No goalie is well above expectation.")}${list("Cold goalies", cold(G).slice(0, 8), "No goalie is well below expectation.")}</div>
+      <div class="card"><div class="chart-controls"><h2 style="margin:0">Revenge games · next 7 days</h2>
+        <select id="rvgp" aria-label="Minimum games with former team">${[50, 80, 150, 250].map(n => `<option value="${n}" ${n === st.rvgp ? "selected" : ""}>${n}+ games with old team</option>`).join("")}</select>
+        <span class="muted">A player facing a team he played for (whole NHL career, via NHL.com profiles)</span></div><div id="rv"></div></div>
       <div class="card"><h2>Teams</h2><div id="tt"></div></div>
       <div class="grid3">${list("Likely to cool off", flagged([...S, ...T], "regression_risk").slice(0, 10), "None flagged.")}${list("Due to heat up", flagged([...S, ...T], "buy_low").slice(0, 10), "None flagged.")}${list("Role changes (ice time)", [...flagged(S, "role_up"), ...flagged(S, "role_down")].slice(0, 12), "None flagged.")}</div>
       <div class="card muted" style="font-size:12px"><b>How this works.</b> For each player we set an expected rate from his earlier games this season, blended with last season (or the league average for his position) so a short sample can't swing it. The last 10 and last 5 games are compared with that expectation using exact odds, and the result becomes a score. +0.9 or more is Warming and +1.8 or more is Hot; the same thresholds below zero mean Cooling and Cold. Goalies use save % over their last 5 and 10 games, and teams use points % plus goal differential over the last 10. "Likely to cool" marks hot runs built on unsustainable shooting % (or, for teams, PDO while being outshot). "Due to heat up" marks the reverse. Even in a league with no real streaks, about 1 in 20 players would show as Hot or Cold by chance, so use the reasons to judge each case.</div>`;
@@ -908,6 +964,15 @@ async function pageTrends(params) {
       { k: "status", label: "Form", html: r => formBadge(r.status), sortVal: r => r.score }, { k: "score", label: "Score", n: 1, fmt: v => fmtSigned(v, 1) },
       { k: "why", label: "Why", html: r => r.reasons.map(esc).join(" · ") + " " + flagChips(r.flags), csv: r => r.reasons.join(" | ") }], { sortKey: "score", csvName: `team-form-${st.season}` });
     app.querySelectorAll("[data-k]").forEach(i => i.onchange = () => { const k = i.dataset.k; st[k] = k === "season" ? +i.value : k === "activeOnly" ? i.value === "true" : i.value; render(); });
+    const up = await loadUpcoming();
+    const drawRv = () => {
+      const limit = new Date(); limit.setDate(limit.getDate() + 7);
+      const rows = (up?.revenge || []).filter(r => r.gp_with >= st.rvgp && new Date(r.date + "T12:00:00") <= limit
+        && (st.team === "all" || r.team === st.team || r.opp === st.team) && (st.grp === "all" || posGroup(r.pos) === st.grp || r.pos === "G"));
+      $("#rv").innerHTML = revengeList(rows);
+    };
+    drawRv();
+    $("#rvgp").onchange = e => { st.rvgp = +e.target.value; drawRv(); };
   };
   await render();
 }

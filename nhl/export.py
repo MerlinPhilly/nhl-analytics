@@ -136,6 +136,76 @@ ORDER BY pts DESC
 """
 
 
+# Historical names that differ from today's standings names.
+TEAM_ALIASES = {"Utah Hockey Club": "UTA", "Utah Mammoth": "UTA", "Arizona Coyotes": "ARI",
+                "Phoenix Coyotes": "ARI", "Mighty Ducks of Anaheim": "ANA"}
+REVENGE_MIN_GP = 50   # exported floor; the site filters (default 80)
+
+
+def _norm(name: str) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower().strip()
+
+
+def former_team_gp(con) -> dict:
+    """{(player_id, abbrev): {"gp", "last_season"}} — the larger of the player's full
+    NHL career count (from NHL.com profiles) and the games loaded here."""
+    names = {_norm(n): a for a, n in con.execute(
+        "SELECT abbrev, name FROM teams WHERE name IS NOT NULL").fetchall()}
+    names.update({_norm(k): v for k, v in TEAM_ALIASES.items()})
+    out: dict = {}
+    for pid, team, gp, last in con.execute("""
+            SELECT player_id, team_abbrev, count(*), max(season) FROM (
+                SELECT player_id, team_abbrev, season FROM skater_games
+                UNION ALL SELECT player_id, team_abbrev, season FROM goalie_games) GROUP BY 1, 2""").fetchall():
+        out[(pid, team)] = {"gp": gp, "last_season": last}
+    for pid, name, gp, last in con.execute(
+            "SELECT player_id, team_name, gp, last_season FROM player_career_teams").fetchall():
+        abbr = names.get(_norm(name or ""))
+        if not abbr:
+            continue
+        cur = out.get((pid, abbr))
+        if not cur or (gp or 0) > cur["gp"]:
+            out[(pid, abbr)] = {"gp": gp or 0, "last_season": max(last or 0, cur["last_season"] if cur else 0)}
+    return out
+
+
+def export_upcoming(con, out: str, former: dict, current: dict) -> dict:
+    """Next two weeks of games + 'revenge games' (a player facing a team he played for)."""
+    games = table(con, """
+        SELECT game_id, game_date, start_utc, game_type, away_abbrev, home_abbrev
+        FROM upcoming_games ORDER BY start_utc, game_id""")
+    # career numbers vs each opponent, from loaded games
+    vs = {}
+    for pid, opp, gp, g, a, p in con.execute("""
+            SELECT player_id, opp_abbrev, count(*), sum(goals), sum(assists), sum(points)
+            FROM skater_games GROUP BY 1, 2""").fetchall():
+        vs[(pid, opp)] = {"gp": gp, "g": g, "a": a, "p": p}
+    for pid, opp, gp, sv, sa in con.execute("""
+            SELECT player_id, opp_abbrev, count(*), sum(saves), sum(shots_against)
+            FROM goalie_games GROUP BY 1, 2""").fetchall():
+        vs[(pid, opp)] = {"gp": gp, "svpct": round(sv / sa, 3) if sa else None}
+    by_team: dict = defaultdict(list)
+    for pid, info in current.items():
+        by_team[info["team"]].append(pid)
+    revenge = []
+    for gid, gdate, start, gtype, away, home in games["rows"]:
+        for team, opp in ((away, home), (home, away)):
+            for pid in by_team.get(team, []):
+                f = former.get((pid, opp))
+                if not f or f["gp"] < REVENGE_MIN_GP:
+                    continue
+                info = current[pid]
+                revenge.append({"game_id": gid, "date": gdate, "start_utc": start, "player_id": pid,
+                                "name": info["name"], "pos": info["pos"], "team": team, "opp": opp,
+                                "is_home": team == home, "gp_with": f["gp"],
+                                "last_season_with": f["last_season"], "vs": vs.get((pid, opp))})
+    revenge.sort(key=lambda r: (r["start_utc"] or "", -r["gp_with"]))
+    doc = {"games": games, "revenge": revenge, "min_gp": REVENGE_MIN_GP}
+    write(f"{out}/upcoming.json", doc)
+    return doc
+
+
 def export(con, out: str) -> dict:
     seasons = [r[0] for r in con.execute("SELECT DISTINCT season FROM games ORDER BY season").fetchall()]
     counts = {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
@@ -182,10 +252,35 @@ def export(con, out: str) -> dict:
     for r in gk["rows"]:
         by_goalie[r[0]].append(r[1:])
 
+    # Who is on which team right now (last game in the latest season, within 30 days)
+    current = {}
+    for pid, team, name, pos in con.execute("""
+            WITH g AS (
+                SELECT player_id, team_abbrev, game_date, name, position, season FROM skater_games
+                UNION ALL SELECT player_id, team_abbrev, game_date, name, 'G', season FROM goalie_games)
+            SELECT g.player_id, arg_max(g.team_abbrev, g.game_date),
+                   coalesce(any_value(p.full_name), arg_max(g.name, g.game_date)),
+                   coalesce(any_value(p.position), mode(g.position))
+            FROM g LEFT JOIN players p USING (player_id)
+            WHERE g.season = (SELECT max(season) FROM games)
+            GROUP BY g.player_id
+            HAVING max(g.game_date) >= (SELECT max(game_date) FROM games) - INTERVAL 30 DAY""").fetchall():
+        current[pid] = {"team": team, "name": name, "pos": pos}
+    former = former_team_gp(con)
+    former_by_player = defaultdict(list)
+    for (pid, abbr), f in former.items():
+        if f["gp"] >= REVENGE_MIN_GP:
+            former_by_player[pid].append({"team": abbr, "gp": f["gp"], "last_season": f["last_season"]})
+
     for pid, row in [(r[0], r) for r in idx["rows"]]:
         bio = dict(zip(bio_cols, [_clean(v) for v in bios[pid]])) if pid in bios else \
             {"id": pid, "name": row[1], "pos": row[2], "current_team": row[3]}
         doc = {"bio": bio}
+        cur_team = current.get(pid, {}).get("team")
+        if cur_team:
+            doc["bio"]["current_team"] = cur_team
+        doc["former_teams"] = sorted([f for f in former_by_player.get(pid, []) if f["team"] != cur_team],
+                                     key=lambda f: -f["gp"])
         if pid in by_player:
             doc["skater"] = {"cols": sk["cols"][1:], "rows": by_player[pid]}
         if pid in by_goalie:
@@ -266,6 +361,8 @@ def export(con, out: str) -> dict:
             "skaters": {"cols": sk_box_cols, "rows": box_sk.get(gid, [])},
             "goalies": {"cols": gk_box_cols, "rows": box_gk.get(gid, [])},
         })
+
+    export_upcoming(con, out, former, current)
 
     meta = {"updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             "last_game": _clean(last_game), "seasons": seasons,
