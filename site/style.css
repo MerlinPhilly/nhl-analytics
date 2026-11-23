@@ -213,3 +213,12 @@ td.cold { background: var(--tier-poor-bg); }
 .trend-list { list-style: none; margin: 0; padding: 0; }
 .trend-list li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 7px 0; border-bottom: 1px solid var(--grid); }
 .trend-list .why { grid-column: 1 / -1; font-size: 12px; color: var(--text-secondary); }
+
+/* today's games */
+.tg-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.tg-card { display: grid; grid-template-columns: 1fr auto 1fr; gap: 6px 10px; align-items: start; align-content: start; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface-0); }
+.tg-time { grid-column: 1 / -1; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.tg-at { color: var(--text-muted); padding-top: 2px; }
+.tg-name { font-size: 15px; font-weight: 600; }
+.tg-meta { font-size: 12px; color: var(--text-secondary); margin: 2px 0 4px; }
+.tg-rv { grid-column: 1 / -1; font-size: 12px; color: var(--text-secondary); border-top: 1px solid var(--grid); padding-top: 6px; }

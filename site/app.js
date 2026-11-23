@@ -1131,6 +1131,41 @@ async function drawSituational(el, st) {
   render();
 }
 
+// ---------- today's games (Games page)
+const localISO = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+async function todaysGames(el) {
+  if (!el) return;
+  const up = await loadUpcoming();
+  if (!up) return;
+  const today = localISO(new Date());
+  const all = objs(up.games);
+  let games = all.filter(g => g.game_date === today), label = "Today's games";
+  if (!games.length) {
+    const next = all.find(g => g.game_date > today);
+    el.innerHTML = `<div class="card"><h2>Today's games</h2><div class="muted">No NHL games today${next ? ` — next game day is ${fmtDate(next.game_date)}.` : "."}</div></div>`;
+    return;
+  }
+  let lg = null;
+  try { lg = await load(`league/${META.current_season}.json`); } catch { }
+  const rec = Object.fromEntries(objs(lg?.teams).filter(t => t.game_type === "R").map(t => [t.team, t]));
+  const form = lg?.form?.teams || {};
+  const rv = (up.revenge || []).filter(r => r.date === today && r.gp_with >= REVENGE_DEFAULT);
+  const side = (abbr, home) => {
+    const t = rec[abbr], f = form[abbr];
+    return `<div class="tg-team"><div class="tg-name">${home ? "" : ""}${teamLink(abbr)} <span class="muted">${esc(TEAM_BY[abbr]?.common_name || "")}</span></div>
+      <div class="tg-meta">${t ? `${t.w}-${t.l}-${t.otl} · ${t.pts} pts · L10 ${t.w10}-${t.l10}-${t.otl10}` : "–"}</div>
+      <div>${f ? formBadge(f.status) : ""}</div></div>`;
+  };
+  el.innerHTML = `<div class="card"><h2>${label} <span class="muted">· ${fmtDate(today)} · ${games.length} game${games.length > 1 ? "s" : ""}</span></h2>
+    <div class="tg-list">${games.map(g => {
+      const r = rv.filter(x => x.game_id === g.game_id);
+      const time = g.start_utc ? new Date(g.start_utc).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "";
+      return `<div class="tg-card"><div class="tg-time">${time}</div>${side(g.away_abbrev, false)}<div class="tg-at">@</div>${side(g.home_abbrev, true)}
+        ${r.length ? `<div class="tg-rv">${r.map(x => `↩ ${playerLink(x.player_id, x.name)} (${esc(x.team)}) faces his old team — ${x.gp_with} GP with ${esc(x.opp)}`).join("<br>")}</div>` : ""}</div>`;
+    }).join("")}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Scores appear in the morning refresh after games finish. Times in your time zone.</div></div>`;
+}
+
 // ---------- games list & box score
 async function pageGames(params) {
   const st = { season: +(params.get("season") || META.current_season), date: params.get("date") || "" };
@@ -1140,11 +1175,13 @@ async function pageGames(params) {
     if (!st.date || !dates.includes(st.date)) st.date = dates[dates.length - 1] || "";
     const i = dates.indexOf(st.date);
     app.innerHTML = `<div class="head"><div><h1>Games</h1><div class="meta">${gl.length} games in ${seasonLabel(st.season)}</div></div></div>
+      <div id="today"></div>
       <div class="card filters"><label>Season<select id="gs">${[...META.seasons].reverse().map(s => `<option value="${s}" ${s === st.season ? "selected" : ""}>${seasonLabel(s)}</option>`).join("")}</select></label>
       <label>Date<input type="date" id="gd" value="${st.date}" min="${dates[0] || ""}" max="${dates[dates.length - 1] || ""}"></label>
       <button class="btn" id="prev" ${i <= 0 ? "disabled" : ""}>← Prev game day</button><button class="btn" id="next" ${i >= dates.length - 1 ? "disabled" : ""}>Next game day →</button></div>
       <div class="card"><h2>${st.date ? fmtDate(st.date) : ""}</h2><div class="games-list">${gl.filter(g => g.game_date === st.date).map(gameCard).join("") || '<div class="empty">No games on this date.</div>'}</div></div>
       <div class="card"><h2>All results</h2><div id="all"></div></div>`;
+    todaysGames($("#today"));
     $("#gs").onchange = e => { st.season = +e.target.value; st.date = ""; render(); };
     $("#gd").onchange = e => { st.date = e.target.value; const later = dates.find(d => d >= st.date); if (later) st.date = later; render(); };
     $("#prev").onclick = () => { st.date = dates[i - 1]; render(); };
