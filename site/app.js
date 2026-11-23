@@ -299,6 +299,12 @@ function commonSplits(resultKey, teamFirst = false) {
     { key: "div", label: "Opp. division", fn: g => TEAM_BY[g.opp_abbrev]?.division || "Other" },
     { key: "result", label: teamFirst ? "Result" : "Team result", fn: g => g[resultKey] || "–" },
     { key: "rest", label: "Rest", fn: g => restLabel(g.rest_days), order: k => ["Season opener", "Back-to-back", "1 day rest", "2 days rest", "3+ days rest"].indexOf(k) },
+    { key: "trip", label: "Road trips", fn: g => (g.is_home ? "Home games" : g.trip_game >= 4 ? "Road trip: game 4+" : `Road trip: game ${g.trip_game}`),
+      order: k => (k === "Home games" ? "0" : k) },
+    { key: "triplen", label: "Trip length", fn: g => (g.is_home ? "Home games" : g.trip_len >= 5 ? "Road trip of 5+ games" : g.trip_len === 1 ? "Single road game" : `${g.trip_len}-game road trip`),
+      order: k => (k === "Home games" ? "0" : k === "Single road game" ? "1" : k) },
+    { key: "b2b", label: "Back-to-backs", fn: g => (g.b2b === "2nd" ? "2nd night of back-to-back" : g.b2b === "1st" ? "1st night of back-to-back" : "Not a back-to-back"),
+      order: k => ["1st night of back-to-back", "2nd night of back-to-back", "Not a back-to-back"].indexOf(k) },
     { key: "dow", label: "Day of week", fn: g => DOW[new Date(g.game_date + "T12:00:00").getDay()], order: k => DOW.indexOf(k) },
     { key: "type", label: "Reg/Playoffs", fn: g => (g.game_type === "P" ? "Playoffs" : "Regular season") },
   ];
@@ -493,6 +499,19 @@ async function pagePlayer(id) {
   const body = $("#body");
   let metric = isGoalie ? "svpct" : "points", win = 10, rankVs = "group";
   const rankSeason = () => (f.seasons?.length ? Math.max(...f.seasons) : latest);
+  let muOpp = null;
+  const mostPlayed = () => Object.entries(groupBy(games, g => g.opp_abbrev)).sort((a, b) => b[1].length - a[1].length)[0]?.[0];
+  const drawMatchup = () => {
+    const el = $("#matchup"); if (!el) return;
+    const opp = muOpp || mostPlayed();
+    if (!opp) return;
+    matchupCard(el, games.filter(g => g.game_type === "R"), isGoalie, opp, opps, v => { muOpp = v; drawMatchup(); });
+  };
+  loadUpcoming().then(up => {
+    if (!up || !team || muOpp) return;
+    const [ng] = nextGamesFor(up, team, 1);
+    if (ng) { muOpp = ng.home_abbrev === team ? ng.away_abbrev : ng.home_abbrev; drawMatchup(); }
+  });
   const render = async () => {
     const fg = applyFilter(games, f, "team_result");
     $(".filter-note").textContent = `${fg.length} of ${games.length} games`;
@@ -512,8 +531,10 @@ async function pagePlayer(id) {
           <select id="win">${[3, 5, 10, 20].map(w => `<option value="${w}" ${w === win ? "selected" : ""}>${w}-game rolling</option>`).join("")}</select></div>
           <div class="legend" id="tleg"></div><div class="chart" id="trend"></div></div>
         <div class="card"><h2>Splits</h2><div id="splits"></div></div>
+        <div class="grid2"><div>${patternsCard(fg, true)}</div><div id="matchup"></div></div>
         <div class="card"><h2>Game log</h2><div id="log"></div></div>
         <div class="card"><h2>By season</h2><div id="career"></div></div>`;
+      drawMatchup();
       drawTrendGoalie(fg, metric, win);
       splitsBlock($("#splits"), fg, "G", withFormerSplit(commonSplits("team_result"), former));
       sortTable($("#log"), [...fg].reverse(), [
@@ -543,8 +564,10 @@ async function pagePlayer(id) {
           <div class="card"><h2>League percentiles <span class="muted" id="pct-note"></span></h2><div id="pct"></div></div>
         </div>
         <div class="card"><h2>Splits</h2><div id="splits"></div></div>
+        <div class="grid2"><div>${patternsCard(fg, false)}</div><div id="matchup"></div></div>
         <div class="card"><h2>Game log</h2><div id="log"></div></div>
         <div class="card"><h2>By season</h2><div id="career"></div></div>`;
+      drawMatchup();
       drawTrendSkater(fg, metric, win);
       percentiles(bio, f.seasons?.length === 1 ? f.seasons[0] : latest, f.type === "P" ? "P" : "R");
       splitsBlock($("#splits"), fg, "S", withFormerSplit(commonSplits("team_result"), former));
@@ -642,6 +665,70 @@ function revengeList(rows, { showDate = true } = {}) {
   return `<ul class="trend-list">${rows.map(r => `<li><span>${playerLink(r.player_id, r.name)} <span class="muted">${esc(r.pos || "")} · ${esc(r.team)}</span>
     ${r.is_home ? "vs" : "@"} <b>${teamLink(r.opp)}</b></span><span class="muted">${showDate ? fmtGameTime(r.date, r.start_utc) : ""}</span>
     <span class="why">${r.gp_with} games with ${esc(r.opp)}${r.last_season_with ? " (last in " + seasonLabel(r.last_season_with) + ")" : ""}${r.vs ? " · vs them since 2021-22: " + vsLine(r.vs) : ""}</span></li>`).join("")}</ul>`;
+}
+
+// ------------------------------------------------------------------ scoring patterns & matchups (player page)
+/** After a game where `hit(g)` happened, how often does it happen again next game? Consecutive games within a season. */
+function followThrough(games, hit) {
+  let ah = 0, ahn = 0, am = 0, amn = 0, longest = 0, run = 0, pairs = 0, both = 0;
+  for (let i = 0; i < games.length; i++) {
+    const h = hit(games[i]);
+    run = h ? run + 1 : 0; longest = Math.max(longest, run);
+    if (i > 0 && games[i - 1].season === games[i].season) {
+      const p = hit(games[i - 1]); pairs++;
+      if (p) { ahn++; if (h) { ah++; both++; } } else { amn++; if (h) am++; }
+    }
+  }
+  const rate = games.length ? games.filter(hit).length / games.length : null;
+  let current = 0; for (let i = games.length - 1; i >= 0 && hit(games[i]); i--) current++;
+  return { rate, afterHit: div(ah, ahn), afterMiss: div(am, amn), ahn, amn, longest, current, b2bShare: div(both, pairs) };
+}
+function patternVerdict(ft, what) {
+  if (ft.ahn < 15 || ft.amn < 15) return `<span class="muted">Not enough games yet to judge.</span>`;
+  const d = ft.afterHit - ft.afterMiss;
+  if (d >= 0.12) return `<b>Streaky</b> — ${what} tend to come in bunches`;
+  if (d <= -0.12) return `<b>Bounce-back</b> — more likely after a game without one`;
+  return `<b>Even</b> — last game doesn't predict the next`;
+}
+function patternsCard(fg, isGoalie) {
+  const rowsDef = isGoalie
+    ? [["Quality start (.900+)", g => g.shots_against > 0 && g.saves / g.shots_against >= 0.9, "quality starts"],
+       ["Win", g => g.decision === "W", "wins"]]
+    : [["Point", g => g.points > 0, "points"], ["Goal", g => g.goals > 0, "goals"], ["Multi-point game", g => g.points >= 2, "multi-point games"],
+       ["3+ shots", g => g.sog >= 3, "shot games"]];
+  const rows = rowsDef.map(([label, fn, what]) => ({ label, ft: followThrough(fg, fn), what }));
+  return `<div class="card"><h2>Scoring patterns <span class="muted" style="font-weight:400">· consecutive games in your filter</span></h2>
+    <table><thead><tr><th></th><th class="n">Any game</th><th class="n">Right after one</th><th class="n">After a game without</th><th class="n">Back-to-back games</th><th class="n">Longest run</th><th class="n">Current run</th></tr></thead><tbody>
+    ${rows.map(({ label, ft }) => `<tr><td>${label}</td><td class="n">${fmtPct(ft.rate, 0)}</td>
+      <td class="n ${ft.ahn >= 15 && ft.afterHit - ft.rate >= 0.1 ? "hot" : ""}">${fmtPct(ft.afterHit, 0)} <span class="muted">(${ft.ahn})</span></td>
+      <td class="n">${fmtPct(ft.afterMiss, 0)} <span class="muted">(${ft.amn})</span></td>
+      <td class="n" title="Share of consecutive game pairs where both games had one">${fmtPct(ft.b2bShare, 0)}</td><td class="n">${ft.longest}</td><td class="n">${ft.current}</td></tr>`).join("")}
+    </tbody></table>
+    <ul style="margin:8px 0 0;padding-left:18px;color:var(--text-secondary);font-size:13px">${rows.slice(0, 2).map(r => `<li>${r.label}s: ${patternVerdict(r.ft, r.what)}</li>`).join("")}</ul>
+    <div class="muted" style="font-size:12px;margin-top:6px">"Right after one" = chance of doing it again the very next game. Numbers in parentheses are sample sizes.</div></div>`;
+}
+function matchupCard(el, games, isGoalie, opp, opps, onPick) {
+  const vs = games.filter(g => g.opp_abbrev === opp), rest = games.filter(g => g.opp_abbrev !== opp);
+  if (!opps.includes(opp)) opps = [opp, ...opps];
+  const pick = `<select id="mu-opp">${opps.map(o => `<option value="${o}" ${o === opp ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  let body;
+  if (!vs.length) body = `<div class="muted">No games against ${esc(opp)} since 2021-22.</div>`;
+  else if (isGoalie) {
+    const a = aggGoalie(vs), b = aggGoalie(rest);
+    body = tiles([["GP vs " + opp, a.gp, recordStr(a)], ["SV%", fmtSv(a.svpct), "others " + fmtSv(b.svpct)], ["GAA", fmt(a.gaa, 2), "others " + fmt(b.gaa, 2)]]);
+  } else {
+    const a = aggSkater(vs), b = aggSkater(rest);
+    const z = (() => { const n1 = a.gp, n2 = b.gp; if (!n1 || !n2) return 0; const pool = (a.p + b.p) / (n1 + n2); return (a.p / n1 - b.p / n2) / Math.sqrt(Math.max(pool, 1e-9) * (1 / n1 + 1 / n2)); })();
+    const conf = Math.abs(z) >= 2.5 ? "strong" : Math.abs(z) >= 1.5 ? "moderate" : "weak (could be chance)";
+    body = tiles([["GP vs " + opp, a.gp], ["Points", a.p, fmt(a.ppg_rate, 2) + "/GP"], ["Others", fmt(b.ppg_rate, 2) + "/GP", "vs everyone else"],
+      ["Goals", a.g, fmt(a.gpg, 2) + "/GP"], ["Shots/GP", fmt(a.sog_rate, 1), "others " + fmt(b.sog_rate, 1)]])
+      + `<div class="sec" style="margin-top:8px;font-size:13px">${a.ppg_rate > b.ppg_rate ? "Better" : "Worse"} against ${esc(opp)} by ${fmt(Math.abs(a.ppg_rate - b.ppg_rate), 2)} points per game — evidence: <b>${conf}</b>.</div>`;
+  }
+  const last = [...vs].reverse().slice(0, 5);
+  el.innerHTML = `<div class="card"><div class="chart-controls"><h2 style="margin:0">Matchup</h2>${pick}<span class="muted">regular season since 2021-22</span></div>${body}
+    ${last.length ? `<table style="margin-top:10px"><thead><tr><th>Last meetings</th><th class="n">${isGoalie ? "SV" : "G-A-P"}</th><th class="n">${isGoalie ? "SV%" : "SOG"}</th><th>Result</th></tr></thead><tbody>${last.map(g =>
+      `<tr><td><a href="#/game/${g.game_id}">${shortDate(g.game_date)} ${String(g.season).slice(2, 4)}-${String(g.season).slice(6)}</a> ${g.is_home ? "vs" : "@"} ${g.opp_abbrev}</td><td class="n">${isGoalie ? `${g.saves}/${g.shots_against}` : `${g.goals}-${g.assists}-${g.points}`}</td><td class="n">${isGoalie ? fmtSv(div(g.saves, g.shots_against)) : g.sog}</td><td>${g.team_result || ""}</td></tr>`).join("")}</tbody></table>` : ""}</div>`;
+  el.querySelector("#mu-opp").onchange = e => onPick(e.target.value);
 }
 
 // ------------------------------------------------------------------ form (hot / cold)
@@ -957,6 +1044,7 @@ async function pageTrends(params) {
       <div class="card"><div class="chart-controls"><h2 style="margin:0">Revenge games · next 7 days</h2>
         <select id="rvgp" aria-label="Minimum games with former team">${[50, 80, 150, 250].map(n => `<option value="${n}" ${n === st.rvgp ? "selected" : ""}>${n}+ games with old team</option>`).join("")}</select>
         <span class="muted">A player facing a team he played for (whole NHL career, via NHL.com profiles)</span></div><div id="rv"></div></div>
+      <div class="card"><h2>Situational edges</h2><div id="sit"></div></div>
       <div class="card"><h2>Teams</h2><div id="tt"></div></div>
       <div class="grid3">${list("Likely to cool off", flagged([...S, ...T], "regression_risk").slice(0, 10), "None flagged.")}${list("Due to heat up", flagged([...S, ...T], "buy_low").slice(0, 10), "None flagged.")}${list("Role changes (ice time)", [...flagged(S, "role_up"), ...flagged(S, "role_down")].slice(0, 12), "None flagged.")}</div>
       <div class="card muted" style="font-size:12px"><b>How this works.</b> For each player we set an expected rate from his earlier games this season, blended with last season (or the league average for his position) so a short sample can't swing it. The last 10 and last 5 games are compared with that expectation using exact odds, and the result becomes a score. +0.9 or more is Warming and +1.8 or more is Hot; the same thresholds below zero mean Cooling and Cold. Goalies use save % over their last 5 and 10 games, and teams use points % plus goal differential over the last 10. "Likely to cool" marks hot runs built on unsustainable shooting % (or, for teams, PDO while being outshot). "Due to heat up" marks the reverse. Even in a league with no real streaks, about 1 in 20 players would show as Hot or Cold by chance, so use the reasons to judge each case.</div>`;
@@ -964,6 +1052,7 @@ async function pageTrends(params) {
       { k: "status", label: "Form", html: r => formBadge(r.status), sortVal: r => r.score }, { k: "score", label: "Score", n: 1, fmt: v => fmtSigned(v, 1) },
       { k: "why", label: "Why", html: r => r.reasons.map(esc).join(" · ") + " " + flagChips(r.flags), csv: r => r.reasons.join(" | ") }], { sortKey: "score", csvName: `team-form-${st.season}` });
     app.querySelectorAll("[data-k]").forEach(i => i.onchange = () => { const k = i.dataset.k; st[k] = k === "season" ? +i.value : k === "activeOnly" ? i.value === "true" : i.value; render(); });
+    drawSituational($("#sit"), st);
     const up = await loadUpcoming();
     const drawRv = () => {
       const limit = new Date(); limit.setDate(limit.getDate() + 7);
@@ -975,6 +1064,71 @@ async function pageTrends(params) {
     $("#rvgp").onchange = e => { st.rvgp = +e.target.value; drawRv(); };
   };
   await render();
+}
+
+// ---------- situational edges (Trends page)
+const SIT_TABS = [
+  ["road", "Road vs home", "Points per game in road games vs home games"],
+  ["b2b", "Back-to-backs", "Points per game on the 2nd night of a back-to-back vs all other games"],
+  ["trip", "Long road trips", "Points per game in the 3rd+ game of a road trip vs the first two road games"],
+  ["dow", "Day of week", "Each player's most unusual day vs his other days (corrected for checking 7 days)"],
+  ["streak", "Streaky scorers", "Chance of a point (or goal) the very next game after getting one vs after a game without"],
+  ["matchup", "Matchups this week", "Points per game vs this week's opponent vs all other teams (all games since 2021-22)"],
+  ["goalie", "Goalies", "Save % on the road and on the 2nd night of back-to-backs vs other starts"],
+  ["teams", "Teams", "This season's points % by situation"],
+];
+const evidence = z => { const a = Math.abs(z); return a >= 2.5 ? ["Strong", 3] : a >= 1.8 ? ["Moderate", 2] : a >= 1.5 ? ["Weak", 1] : ["Noise", 0]; };
+function signalNote(sig) {
+  if (!sig) return "";
+  const ratio = sig.expected ? sig.strong / sig.expected : 0;
+  const verdict = ratio <= 1.3 ? "Mostly noise across the league — treat any single result here with caution."
+    : ratio <= 2 ? "Some real signal mixed with noise — trust larger samples and strong evidence."
+    : "Real signal — this situation genuinely matters for some players.";
+  return `<div class="rank-bar"><span><b>Signal check:</b> ${sig.strong} strong patterns found among ${sig.n} players; chance alone would produce about ${sig.expected}. ${verdict}</span></div>`;
+}
+async function drawSituational(el, st) {
+  let S;
+  try { S = await load("situational.json"); } catch { el.innerHTML = '<div class="muted">Not available yet — appears after the next data refresh.</div>'; return; }
+  let tab = st.sitTab || "road", show = st.sitShow || "signal";
+  const render = () => {
+    st.sitTab = tab; st.sitShow = show;
+    const [, , desc] = SIT_TABS.find(t => t[0] === tab);
+    const keep = r => (st.team === "all" || r.team === st.team || r.opp === st.team) && (st.grp === "all" || !r.pos || r.pos === "G" || posGroup(r.pos) === st.grp)
+      && (show === "all" || Math.abs(r.z) >= 1.5);
+    let rows = tab === "streak" ? S.streaks : tab === "matchup" ? S.matchups : tab === "goalie" ? S.goalies : tab === "teams" ? null : S.skaters.filter(r => r.cat === tab);
+    el.innerHTML = `<div class="tabs">${SIT_TABS.map(([k, l]) => `<button class="tab ${k === tab ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>
+      <div class="chart-controls"><span class="sec">${desc}.${tab === "teams" ? "" : ` Seasons: ${S.seasons.map(seasonLabel).join(", ")}${tab === "matchup" ? " (matchups use every loaded season)" : ""}.`}</span>
+      ${tab !== "teams" ? `<select id="sitshow"><option value="signal" ${show === "signal" ? "selected" : ""}>Show weak evidence or better</option><option value="all" ${show === "all" ? "selected" : ""}>Show everyone</option></select>` : ""}</div>
+      ${tab !== "teams" ? signalNote(S.signal?.[tab]) : ""}<div id="sit-tbl"></div>`;
+    el.querySelectorAll(".tab").forEach(b => b.onclick = () => { tab = b.dataset.k; render(); });
+    const ss = el.querySelector("#sitshow"); if (ss) ss.onchange = e => { show = e.target.value; render(); };
+    const tbl = el.querySelector("#sit-tbl");
+    if (tab === "teams") {
+      const T = S.teams.filter(t => st.team === "all" || t.team === st.team);
+      const cell = k => ({ k, label: { all: "Overall", home: "Home", road: "Road", b2b2: "B2B 2nd night", trip3: "Road trip game 3+" }[k], n: 1,
+        html: r => `${fmtSv(r[k].pct)} <span class="muted">(${r[k].n})</span>`, sortVal: r => r[k].pct, csv: r => r[k].pct,
+        cellCls: r => (k === "all" || r[k].n < 3 || r[k].pct == null ? "" : r[k].pct - r.all.pct >= 0.1 ? "hot" : r[k].pct - r.all.pct <= -0.1 ? "cold" : "") });
+      sortTable(tbl, T, [{ k: "team", label: "Team", html: r => `${teamLink(r.team)} <span class="muted">${esc(TEAM_BY[r.team]?.common_name || "")}</span>` },
+        cell("all"), cell("home"), cell("road"), cell("b2b2"), cell("trip3")], { sortKey: "all", csvName: "team-situational" });
+      tbl.insertAdjacentHTML("beforeend", `<div class="muted" style="font-size:12px;margin-top:6px">Points % (W = 2, OT loss = 1). Games in parentheses — team samples this early in the season are small.</div>`);
+      return;
+    }
+    rows = rows.filter(keep);
+    const isPct = r => r.unit === "pct";
+    const f = (v, r) => (v == null ? "–" : r.stat === "svpct" ? fmtSv(v) : isPct(r) ? fmtPct(v, 0) : fmt(v, 2));
+    const fd = (v, r) => (v == null ? "–" : r.stat === "svpct" ? fmtSigned(v * 1000, 0) + " pts" : isPct(r) ? fmtSigned(v * 100, 0) + " pp" : fmtSigned(v, 2));
+    sortTable(tbl, rows, [
+      { k: "name", label: "Player", html: r => playerLink(r.id, r.name) }, { k: "team", label: "Team", html: r => teamLink(r.team) }, { k: "pos", label: "Pos" },
+      { k: "label", label: "Situation" },
+      { k: "r1", label: "In situation", n: 1, html: r => `${f(r.r1, r)} <span class="muted">(${r.n1})</span>`, sortVal: r => r.r1, csv: r => r.r1 },
+      { k: "r2", label: "Otherwise", n: 1, html: r => `${f(r.r2, r)} <span class="muted">(${r.n2})</span>`, sortVal: r => r.r2, csv: r => r.r2 },
+      { k: "diff", label: "Difference", n: 1, html: r => fd(r.diff, r), csv: r => r.diff, cellCls: r => (Math.abs(r.z) < 1.5 ? "" : r.diff > 0 ? "hot" : "cold") },
+      { k: "z", label: "Evidence", html: r => `${evidence(r.z)[0]} <span class="muted">${fmtSigned(r.z, 1)}</span>`, sortVal: r => r.z, csv: r => r.z,
+        title: "How unlikely the gap is to be chance (z-score). Strong ≥ 2.5, Moderate ≥ 1.8, Weak ≥ 1.5" }],
+      { sortKey: "z", limit: 300, csvName: `situational-${tab}` });
+    tbl.insertAdjacentHTML("beforeend", `<div class="muted" style="font-size:12px;margin-top:6px">Rates are ${tab === "streak" ? "chance of a point/goal" : tab === "goalie" ? "save %" : "points per game"}; samples in parentheses (${tab === "goalie" ? "starts" : tab === "streak" ? "games" : "games"}). Green = better in the situation, red = worse. Sort "Evidence" either way to see both ends.</div>`);
+  };
+  render();
 }
 
 // ---------- games list & box score

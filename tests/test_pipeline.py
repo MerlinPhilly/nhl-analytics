@@ -71,5 +71,14 @@ def test_backfill_daily_export(env):
     assert all(r["team"] != r["opp"] and r["gp_with"] >= up["min_gp"] for r in up["revenge"])
     # career history from before the loaded seasons is counted (NHL.com profile path)
     assert any(r["last_season_with"] < 20212022 for r in up["revenge"])
+    sit = json.load(open(out / "situational.json"))
+    assert sit["skaters"] and sit["streaks"] and sit["teams"] and sit["signal"]
+    # the mock league is pure chance, so "strong" patterns should be near the chance rate
+    for cat, sig in sit["signal"].items():
+        assert sig["strong"] <= max(4, 3 * sig["expected"]), (cat, sig)
+    tg = con.execute("SELECT count(*) FILTER (b2b = '1st'), count(*) FILTER (b2b = '2nd') FROM v_team_games").fetchone()
+    # every back-to-back has a 1st night; the mock (unlike the NHL) also schedules 3-in-3s,
+    # whose middle game counts as a 2nd night
+    assert tg[1] >= tg[0] > 0
     some = pl["rows"][0][0]
     assert (out / "players" / f"{some}.json").exists()

@@ -283,3 +283,160 @@ def season_form(con, season: int) -> dict:
             "skaters": {str(k): v for k, v in sk.get("players", {}).items()},
             "goalies": {str(k): v for k, v in gk.get("players", {}).items()},
             "teams": tm.get("teams", {})}
+
+
+# ================================================================ situational edges
+# Who is meaningfully better or worse in a given situation (road games, the 2nd night
+# of a back-to-back, late in long road trips, a day of the week, vs this week's
+# opponent), plus who is "streaky". Every row carries its sample size and a z-score
+# so noise can be told apart from a real pattern.
+DOW = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
+STRONG = 2.5   # |z| at or above this = "strong"
+
+
+def _adjust(z: float, tries: int) -> float:
+    """Correct a z-score for picking the best of `tries` looks (Bonferroni)."""
+    p = min(1.0, 2 * (1 - _N.cdf(abs(z))) * tries)
+    if p >= 1.0:
+        return 0.0
+    return math.copysign(_N.inv_cdf(1 - p / 2), z)
+
+
+def _signal(rows: list) -> dict:
+    """How many strong patterns we found vs how many pure chance would produce."""
+    n = len(rows)
+    strong = sum(1 for r in rows if abs(r["z"]) >= STRONG)
+    return {"n": n, "strong": strong, "expected": round(n * 2 * (1 - _N.cdf(STRONG)), 1)}
+
+
+def _z_rate(a1, n1, a2, n2) -> float:
+    """Difference of two per-game Poisson rates, as a z-score."""
+    if n1 <= 0 or n2 <= 0:
+        return 0.0
+    pooled = (a1 + a2) / (n1 + n2)
+    se = math.sqrt(max(pooled, 1e-9) * (1 / n1 + 1 / n2))
+    return (a1 / n1 - a2 / n2) / se
+
+
+def _z_prop(k1, n1, k2, n2) -> float:
+    """Difference of two proportions, as a z-score."""
+    if n1 <= 0 or n2 <= 0:
+        return 0.0
+    p = (k1 + k2) / (n1 + n2)
+    if p <= 0 or p >= 1:
+        return 0.0
+    return (k1 / n1 - k2 / n2) / math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+
+
+def situational(con, current: dict, upcoming: list, n_seasons: int = 3) -> dict:
+    seasons = [r[0] for r in con.execute(
+        "SELECT DISTINCT season FROM games WHERE game_type = 'R' ORDER BY season").fetchall()][-n_seasons:]
+    if not seasons:
+        return {}
+    ph = ",".join(str(s) for s in seasons)
+    sk = con.execute(f"""
+        SELECT player_id, season, game_date, game_id, opp_abbrev, is_home, points, goals, b2b, trip_game
+        FROM v_skater_games WHERE game_type = 'R' AND season IN ({ph})
+        ORDER BY player_id, game_date, game_id""").df()
+    sk["dow"] = pd.to_datetime(sk["game_date"]).dt.dayofweek
+    skaters, streaks = [], []
+
+    def row(pid, cat, label, a1, n1, a2, n2, unit="pgp", stat="points"):
+        info = current[pid]
+        r1, r2 = a1 / n1, a2 / n2
+        z = _z_rate(a1, n1, a2, n2) if unit == "pgp" else _z_prop(a1, n1, a2, n2)
+        return {"id": int(pid), "name": info["name"], "team": info["team"], "pos": info["pos"], "cat": cat,
+                "label": label, "stat": stat, "unit": unit, "r1": _r(r1), "r2": _r(r2), "n1": int(n1), "n2": int(n2),
+                "diff": _r(r1 - r2), "z": _r(z, 2)}
+
+    for pid, d in sk.groupby("player_id", sort=False):
+        if pid not in current or current[pid]["pos"] == "G" or len(d) < 40:
+            continue
+        pts, home = d["points"], d["is_home"].astype(bool)
+        # road vs home
+        if (~home).sum() >= 15 and home.sum() >= 15:
+            skaters.append(row(pid, "road", "Road games", pts[~home].sum(), (~home).sum(), pts[home].sum(), home.sum()))
+        # 2nd night of a back-to-back vs everything else
+        b2 = d["b2b"] == "2nd"
+        if b2.sum() >= 8:
+            skaters.append(row(pid, "b2b", "2nd night of back-to-back", pts[b2].sum(), b2.sum(), pts[~b2].sum(), (~b2).sum()))
+        # late in road trips (3rd game or later) vs early road games
+        road = d[~home]
+        late = road["trip_game"] >= 3
+        if late.sum() >= 8 and (~late).sum() >= 15:
+            skaters.append(row(pid, "trip", "Road trip game 3+", road["points"][late].sum(), late.sum(),
+                               road["points"][~late].sum(), (~late).sum()))
+        # strongest day-of-week effect (needs a bigger z to count: 7 days = 7 chances for noise)
+        best, looks = None, 0
+        for k in range(7):
+            m = d["dow"] == k
+            if m.sum() >= 10:
+                looks += 1
+                r = row(pid, "dow", DOW[k], pts[m].sum(), m.sum(), pts[~m].sum(), (~m).sum())
+                if best is None or abs(r["z"]) > abs(best["z"]):
+                    best = r
+        if best:
+            best["z_raw"], best["z"] = best["z"], _r(_adjust(best["z"], looks), 2)
+            skaters.append(best)
+        # streakiness: chance of a point right after a point game vs after a pointless game
+        for stat, col in (("points", "points"), ("goals", "goals")):
+            hit = d[col] > 0
+            prev = d.groupby("season")[col].shift(1)
+            after_hit, after_miss = hit[prev > 0], hit[prev == 0]
+            if len(after_hit) >= 15 and len(after_miss) >= 15:
+                r = row(pid, "streak", f"{'Point' if stat == 'points' else 'Goal'} after a {'point' if stat == 'points' else 'goal'} game",
+                        after_hit.sum(), len(after_hit), after_miss.sum(), len(after_miss), unit="pct", stat=stat)
+                streaks.append(r)
+
+    # matchups this week: history vs the upcoming opponent (all loaded seasons)
+    allg = con.execute("""SELECT player_id, opp_abbrev, count(*) n, sum(points) p FROM v_skater_games
+                          WHERE game_type = 'R' GROUP BY 1, 2""").df()
+    tot = allg.groupby("player_id")[["n", "p"]].sum()
+    vs = {(r.player_id, r.opp_abbrev): (r.n, r.p) for r in allg.itertuples()}
+    matchups = []
+    for g in upcoming:
+        for team, opp in ((g["away"], g["home"]), (g["home"], g["away"])):
+            for pid, info in current.items():
+                if info["team"] != team or info["pos"] == "G" or pid not in tot.index:
+                    continue
+                n1, p1 = vs.get((pid, opp), (0, 0))
+                n_all, p_all = tot.at[pid, "n"], tot.at[pid, "p"]
+                if n1 >= 5 and n_all - n1 >= 30:
+                    r = row(pid, "matchup", f"vs {opp} ({g['date'][5:]})", p1, n1, p_all - p1, n_all - n1)
+                    r.update(opp=opp, date=g["date"], game_id=g["game_id"])
+                    matchups.append(r)
+
+    # goalies: save % on the road and on the 2nd night of back-to-backs (starts only)
+    gk = con.execute(f"""SELECT player_id, is_home, b2b, saves, shots_against FROM v_goalie_games
+                         WHERE game_type = 'R' AND season IN ({ph}) AND started AND shots_against > 0""").df()
+    goalies = []
+    for pid, d in gk.groupby("player_id"):
+        if pid not in current or len(d) < 25:
+            continue
+        for cat, label, m in (("road", "Road starts", ~d["is_home"].astype(bool)),
+                              ("b2b", "2nd night of back-to-back", d["b2b"] == "2nd")):
+            if m.sum() >= (10 if cat == "road" else 5) and (~m).sum() >= 10:
+                r = row(pid, cat, label, d["saves"][m].sum(), d["shots_against"][m].sum(),
+                        d["saves"][~m].sum(), d["shots_against"][~m].sum(), unit="pct", stat="svpct")
+                r["n1"], r["n2"] = int(m.sum()), int((~m).sum())   # report starts, not shots
+                goalies.append(r)
+
+    # teams, current season: points % overall / home / road / B2B 2nd night / long trips
+    tg = con.execute("""SELECT team_abbrev team, is_home, b2b, trip_game, result FROM v_team_games
+                        WHERE game_type = 'R' AND season = (SELECT max(season) FROM games)""").df()
+    tg["pts"] = tg["result"].map({"W": 2, "OTL": 1, "L": 0})
+    teams = []
+    for team, d in tg.groupby("team"):
+        def pct(m):
+            n = int(m.sum())
+            return {"pct": _r(d["pts"][m].sum() / (2 * n)) if n else None, "n": n}
+        home = d["is_home"].astype(bool)
+        teams.append({"team": team, "all": pct(d["pts"] >= 0), "home": pct(home), "road": pct(~home),
+                      "b2b2": pct(d["b2b"] == "2nd"), "trip3": pct(~home & (d["trip_game"] >= 3))})
+
+    signal = {cat: _signal([r for r in skaters if r["cat"] == cat]) for cat in ("road", "b2b", "trip", "dow")}
+    signal["streak"] = _signal(streaks)
+    signal["matchup"] = _signal(matchups)
+    signal["goalie"] = _signal(goalies)
+    return {"seasons": seasons, "skaters": skaters, "streaks": streaks, "matchups": matchups,
+            "goalies": goalies, "teams": teams, "signal": signal, "strong_z": STRONG}

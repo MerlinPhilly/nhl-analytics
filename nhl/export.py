@@ -48,15 +48,16 @@ def write(path: str, obj) -> None:
 SKATER_COLS = """game_id, game_date, season, game_type, team_abbrev, opp_abbrev, is_home,
     position, goals, assists, points, plus_minus, pim, sog, hits, blocks, giveaways,
     takeaways, shifts, faceoff_pct, toi_sec, ppg, ppp, shg, shp, gwg, otg, evg, evp,
-    team_result, rest_days, team_gf, team_ga"""
+    team_result, rest_days, team_gf, team_ga, b2b, trip_game, trip_len"""
 
 GOALIE_COLS = """game_id, game_date, season, game_type, team_abbrev, opp_abbrev, is_home,
     started, decision, shots_against, saves, goals_against, ev_saves, ev_shots,
-    pp_saves, pp_shots, sh_saves, sh_shots, toi_sec, team_result, rest_days"""
+    pp_saves, pp_shots, sh_saves, sh_shots, toi_sec, team_result, rest_days, b2b, trip_game, trip_len"""
 
 TEAM_COLS = """game_id, game_date, season, game_type, opp_abbrev, is_home, gf, ga,
     sog_for, sog_against, result, decided_in, pp_goals, pp_opps, pk_goals_against,
-    pk_opps, faceoff_pct, hits, blocks, pim, giveaways, takeaways, rest_days, game_num"""
+    pk_opps, faceoff_pct, hits, blocks, pim, giveaways, takeaways, rest_days, game_num,
+    b2b, trip_game, trip_len"""
 
 SKATER_AGG = """
 WITH g AS (
@@ -203,6 +204,11 @@ def export_upcoming(con, out: str, former: dict, current: dict) -> dict:
     revenge.sort(key=lambda r: (r["start_utc"] or "", -r["gp_with"]))
     doc = {"games": games, "revenge": revenge, "min_gp": REVENGE_MIN_GP}
     write(f"{out}/upcoming.json", doc)
+    # Situational edges (road, back-to-backs, trips, day of week, streaks, matchups this week)
+    week = [{"game_id": gid, "date": str(gdate)[:10], "away": away, "home": home}
+            for gid, gdate, start, gtype, away, home in games["rows"]
+            if str(gdate)[:10] <= (dt.date.today() + dt.timedelta(days=7)).isoformat()]
+    write(f"{out}/situational.json", trends.situational(con, current, week))
     return doc
 
 

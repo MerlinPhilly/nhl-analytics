@@ -77,24 +77,39 @@ CREATE TABLE IF NOT EXISTS run_log (
 """
 
 VIEWS = """
--- Team game log with schedule context (rest days, back-to-backs, game number).
+-- Team game log with schedule context: rest days, back-to-backs (1st / 2nd night),
+-- game number, and where the game falls in a road trip or home stand.
 CREATE OR REPLACE VIEW v_team_games AS
-SELECT tg.*,
-       date_diff('day', lag(tg.game_date) OVER w, tg.game_date) - 1 AS rest_days,
-       row_number() OVER w AS game_num
-FROM team_games tg
-WINDOW w AS (PARTITION BY tg.team_abbrev, tg.season ORDER BY tg.game_date, tg.game_id);
+WITH base AS (
+    SELECT tg.*,
+           date_diff('day', lag(tg.game_date) OVER w, tg.game_date) - 1 AS rest_days,
+           date_diff('day', tg.game_date, lead(tg.game_date) OVER w) - 1 AS next_rest,
+           row_number() OVER w AS game_num,
+           CASE WHEN tg.is_home = lag(tg.is_home) OVER w THEN 0 ELSE 1 END AS new_stretch
+    FROM team_games tg
+    WINDOW w AS (PARTITION BY tg.team_abbrev, tg.season ORDER BY tg.game_date, tg.game_id)),
+stretch AS (
+    SELECT *, sum(new_stretch) OVER (PARTITION BY team_abbrev, season ORDER BY game_date, game_id
+                                     ROWS UNBOUNDED PRECEDING) AS stretch_id
+    FROM base)
+SELECT * EXCLUDE (new_stretch, stretch_id),
+       row_number() OVER s AS trip_game,      -- nth game of this road trip / home stand
+       count(*) OVER (PARTITION BY team_abbrev, season, stretch_id) AS trip_len,
+       CASE WHEN rest_days = 0 THEN '2nd' WHEN next_rest = 0 THEN '1st' END AS b2b
+FROM stretch
+WINDOW s AS (PARTITION BY team_abbrev, season, stretch_id ORDER BY game_date, game_id);
 
 -- Skater game log with enrichment + team context.
 CREATE OR REPLACE VIEW v_skater_games AS
 SELECT s.*, x.ppp, x.shg, x.shp, x.gwg, x.otg, x.evg, x.evp,
-       t.result AS team_result, t.rest_days, t.gf AS team_gf, t.ga AS team_ga
+       t.result AS team_result, t.rest_days, t.gf AS team_gf, t.ga AS team_ga,
+       t.b2b, t.trip_game, t.trip_len
 FROM skater_games s
 LEFT JOIN skater_extra x USING (game_id, player_id)
 LEFT JOIN v_team_games t ON t.game_id = s.game_id AND t.team_abbrev = s.team_abbrev;
 
 CREATE OR REPLACE VIEW v_goalie_games AS
-SELECT g.*, t.result AS team_result, t.rest_days
+SELECT g.*, t.result AS team_result, t.rest_days, t.b2b, t.trip_game, t.trip_len
 FROM goalie_games g
 LEFT JOIN v_team_games t ON t.game_id = g.game_id AND t.team_abbrev = g.team_abbrev;
 """
