@@ -1008,6 +1008,60 @@ async function pageCompare(params) {
 }
 
 
+// ---------- goal leaders
+async function pageGoals(params) {
+  const seasons = [...META.seasons].sort();
+  const cur = META.current_season, i = seasons.indexOf(cur);
+  const last = seasons[i - 1], prev = seasons[i - 2];
+  const st = { n: +(params.get("n") || 50), pos: "all" };
+  const [L0, L1, L2] = await Promise.all([cur, last, prev].map(s => (s ? load(`league/${s}.json`).catch(() => null) : null)));
+  const reg = L => objs(L?.skaters).filter(r => r.game_type === "R");
+  const now = reg(L0), byId = L => Object.fromEntries(reg(L).map(r => [r.player_id, r]));
+  const p1 = byId(L1), p2 = byId(L2);
+  const teamGp = Object.fromEntries(objs(L0?.teams).filter(t => t.game_type === "R").map(t => [t.team, t.gp]));
+  const form = L0?.form?.skaters || {};
+  const render = () => {
+    let pool = now.filter(r => st.pos === "all" || (st.pos === "F" ? isF(r.pos) : r.pos === st.pos));
+    pool.sort((a, b) => b.g - a.g || a.gp - b.gp);
+    const cutoff = pool[st.n - 1]?.g ?? 0;
+    const rows = pool.filter((r, k) => k < st.n || r.g === cutoff && r.g > 0).map((r, k) => {
+      const tg = teamGp[r.team] || r.gp, a = p1[r.player_id], b = p2[r.player_id];
+      const pace = tg ? Math.round(r.g / tg * 82) : null, per82 = r.gp ? Math.round(r.g / r.gp * 82) : null;
+      return { ...r, rank: pool.findIndex(x => x.g === r.g) + 1, tg, pace, per82, gpg: r.gp ? r.g / r.gp : null,
+        g1: a?.g ?? null, gp1: a?.gp ?? null, g2: b?.g ?? null, gp2: b?.gp ?? null,
+        vsLast: a ? pace - a.g : null, form: form[String(r.player_id)] };
+    });
+    app.innerHTML = h`
+      <div class="head"><div><h1>Goal leaders</h1><div class="meta">Top ${st.n} goal scorers in ${seasonLabel(cur)} (ties at the cutoff included), with the two seasons before. Regular season only.</div></div></div>
+      <div class="card filters">
+        <label>Show<select id="gl-n">${[25, 50, 100].map(n => `<option value="${n}" ${n === st.n ? "selected" : ""}>Top ${n}</option>`).join("")}</select></label>
+        <label>Position<select id="gl-pos">${[["all", "All skaters"], ["F", "Forwards"], ["C", "C"], ["L", "LW"], ["R", "RW"], ["D", "Defense"]].map(([k, l]) => `<option value="${k}" ${k === st.pos ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <span class="filter-note">On pace = goals ÷ team games played × 82 · Per 82 GP = goals ÷ his games played × 82</span>
+      </div>
+      <div class="card" id="gl"></div>`;
+    sortTable($("#gl"), rows, [
+      { k: "rank", label: "#", n: 1 },
+      { k: "name", label: "Player", html: r => playerLink(r.player_id, r.name) },
+      { k: "team", label: "Team", html: r => teamLink(r.team) }, { k: "pos", label: "Pos" },
+      { k: "form", label: "Form", html: r => formBadge(r.form?.status), sortVal: r => r.form?.score ?? null, csv: r => r.form?.status || "" },
+      { k: "g", label: `G ${seasonLabel(cur)}`, n: 1, html: r => `<b>${r.g}</b>`, csv: r => r.g },
+      { k: "gp", label: "GP", n: 1, html: r => `${r.gp} <span class="muted">/ ${r.tg}</span>`, csv: r => r.gp, title: "His games played / his team's games played" },
+      { k: "gpg", label: "G/GP", n: 1, fmt: v => fmt(v, 2) },
+      { k: "pace", label: "On pace for", n: 1, html: r => `<b>${r.pace ?? "–"}</b>`, csv: r => r.pace },
+      { k: "per82", label: "Per 82 GP", n: 1 },
+      { k: "g1", label: last ? `G ${seasonLabel(last)}` : "Last year", n: 1, fmt: v => v ?? "–" },
+      { k: "gp1", label: "GP", n: 1, fmt: v => v ?? "–" },
+      { k: "g2", label: prev ? `G ${seasonLabel(prev)}` : "2 years ago", n: 1, fmt: v => v ?? "–" },
+      { k: "gp2", label: "GP", n: 1, fmt: v => v ?? "–" },
+      { k: "vsLast", label: "Pace vs last yr", n: 1, fmt: v => (v == null ? "–" : fmtSigned(v)), title: "This season's on-pace total minus last season's goals",
+        cellCls: r => (r.vsLast == null ? "" : r.vsLast >= 8 ? "hot" : r.vsLast <= -8 ? "cold" : "") },
+    ], { sortKey: "g", csvName: `goal-leaders-${cur}` });
+    $("#gl-n").onchange = e => { st.n = +e.target.value; render(); };
+    $("#gl-pos").onchange = e => { st.pos = e.target.value; render(); };
+  };
+  render();
+}
+
 // ---------- trends
 async function pageTrends(params) {
   const st = { season: +(params.get("season") || META.current_season), grp: "all", team: "all", activeOnly: true, rvgp: REVENGE_DEFAULT };
@@ -1267,6 +1321,7 @@ async function route() {
     else if (parts[0] === "compare") await pageCompare(params);
     else if (parts[0] === "games") await pageGames(params);
     else if (parts[0] === "trends") await pageTrends(params);
+    else if (parts[0] === "goals") await pageGoals(params);
     else if (parts[0] === "game") await pageBox(parts[1]);
     else app.innerHTML = '<div class="empty">Page not found.</div>';
   } catch (e) {
