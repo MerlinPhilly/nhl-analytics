@@ -411,10 +411,12 @@ async function pageHome() {
   app.innerHTML = h`
     <div class="head"><div><h1>${seasonLabel(season)} season</h1><div class="meta">Through ${lastDate ? fmtDate(lastDate) : "–"} · ${META.counts.games.toLocaleString()} games loaded across ${META.seasons.length} seasons</div></div></div>
     <div class="card"><h2>Latest results ${lastDate ? `<span class="muted">· ${fmtDate(lastDate)}</span>` : ""}</h2><div class="games-list">${gl.filter(g => g.game_date === lastDate).map(gameCard).join("") || '<div class="empty">No games yet.</div>'}</div></div>
+    <div id="recap"></div>
     <div class="grid2" id="leaders"></div>
     <div class="card" id="home-rv"><h2>Revenge games this week <a href="#/trends" style="font-size:12px;font-weight:400;margin-left:6px">More →</a></h2><div class="muted">Loading…</div></div>
     <div class="card"><h2>Standings</h2><div class="grid2" id="standings"></div></div>`;
 
+  recapCard($("#recap"), lastDate, gl.filter(g => g.game_date === lastDate));
   loadUpcoming().then(up => {
     const el = $("#home-rv"); if (!el) return;
     const limit = new Date(); limit.setDate(limit.getDate() + 7);
@@ -1185,6 +1187,46 @@ async function drawSituational(el, st) {
   render();
 }
 
+// ---------- scoring recap for a game day (home + games pages)
+async function recapCard(el, date, games) {
+  if (!el || !games.length) { if (el) el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="card"><h2>Scoring recap</h2><div class="muted">Loading box scores…</div></div>`;
+  const boxes = await Promise.all(games.map(g => load(`box/${g.game_id}.json`).catch(() => null)));
+  const rows = [];
+  boxes.forEach(b => {
+    if (!b) return;
+    for (const r of objs(b.skaters)) {
+      if (!r.p) continue;
+      const home = r.team === b.game.home;
+      rows.push({ ...r, opp: home ? b.game.away : b.game.home, is_home: home, game_id: b.game.id,
+        won: (home ? b.game.home_score > b.game.away_score : b.game.away_score > b.game.home_score) });
+    }
+  });
+  const nm = r => `${playerLink(r.id, r.name)} <span class="muted">${esc(r.team)}</span>`;
+  const by = (k, min = 1) => rows.filter(r => r[k] >= min).sort((a, b) => b[k] - a[k] || b.p - a.p || a.name.localeCompare(b.name));
+  const scorers = by("g"), assists = by("a"), multi = by("p", 2);
+  const hat = rows.filter(r => r.g >= 3), big = rows.filter(r => r.p >= 4);
+  const highlights = [
+    ...hat.map(r => `🎩 ${nm(r)} hat trick${r.g > 3 ? ` (${r.g} goals)` : ""} ${r.is_home ? "vs" : "@"} ${r.opp}`),
+    ...big.filter(r => r.g < 3).map(r => `⭐ ${nm(r)} ${r.p}-point night (${r.g}G ${r.a}A) ${r.is_home ? "vs" : "@"} ${r.opp}`),
+  ];
+  const list = (arr, fmtv) => arr.length ? `<ul class="recap-list">${arr.map(r => `<li><span>${nm(r)}</span><span class="num">${fmtv(r)}</span></li>`).join("")}</ul>` : '<div class="muted">None.</div>';
+  el.innerHTML = `<div class="card"><h2>Scoring recap <span class="muted">· ${fmtDate(date)} · ${scorers.length} goal scorers, ${rows.length} players with a point</span></h2>
+    ${highlights.length ? `<div class="recap-hl">${highlights.join("<br>")}</div>` : ""}
+    <div class="grid3">
+      <div><h3>Goals</h3>${list(scorers, r => `${r.g} G${r.ppp ? "" : ""}`)}</div>
+      <div><h3>Assists</h3>${list(assists, r => `${r.a} A`)}</div>
+      <div><h3>Points</h3>${list([...rows].sort((a, b) => b.p - a.p || b.g - a.g || a.name.localeCompare(b.name)), r => `${r.p} P <span class="muted">(${r.g}G ${r.a}A)</span>`)}</div>
+    </div>
+    <details style="margin-top:10px"><summary class="sec" style="cursor:pointer">Full table — everyone with a point (sortable, CSV)</summary><div id="recap-tbl" style="margin-top:8px"></div></details></div>`;
+  sortTable(el.querySelector("#recap-tbl"), rows, [
+    { k: "name", label: "Player", html: r => playerLink(r.id, r.name) }, { k: "team", label: "Team", html: r => teamLink(r.team) },
+    { k: "opp", label: "Opp", html: r => `${r.is_home ? "vs" : "@"} ${teamLink(r.opp)}`, csv: r => (r.is_home ? "vs " : "@ ") + r.opp },
+    { k: "g", label: "G", n: 1 }, { k: "a", label: "A", n: 1 }, { k: "p", label: "P", n: 1 }, { k: "ppp", label: "PPP", n: 1 },
+    { k: "sog", label: "SOG", n: 1 }, { k: "pm", label: "+/-", n: 1, fmt: v => fmtSigned(v) }, { k: "toi", label: "TOI", n: 1, fmt: fmtToi },
+    { k: "game", label: "Game", html: r => `<a href="#/game/${r.game_id}">Box score</a>`, csv: r => r.game_id }], { sortKey: "p", csvName: `scoring-${date}` });
+}
+
 // ---------- today's games (Games page)
 const localISO = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 async function todaysGames(el) {
@@ -1234,8 +1276,10 @@ async function pageGames(params) {
       <label>Date<input type="date" id="gd" value="${st.date}" min="${dates[0] || ""}" max="${dates[dates.length - 1] || ""}"></label>
       <button class="btn" id="prev" ${i <= 0 ? "disabled" : ""}>← Prev game day</button><button class="btn" id="next" ${i >= dates.length - 1 ? "disabled" : ""}>Next game day →</button></div>
       <div class="card"><h2>${st.date ? fmtDate(st.date) : ""}</h2><div class="games-list">${gl.filter(g => g.game_date === st.date).map(gameCard).join("") || '<div class="empty">No games on this date.</div>'}</div></div>
+      <div id="recap"></div>
       <div class="card"><h2>All results</h2><div id="all"></div></div>`;
     todaysGames($("#today"));
+    recapCard($("#recap"), st.date, gl.filter(g => g.game_date === st.date));
     $("#gs").onchange = e => { st.season = +e.target.value; st.date = ""; render(); };
     $("#gd").onchange = e => { st.date = e.target.value; const later = dates.find(d => d >= st.date); if (later) st.date = later; render(); };
     $("#prev").onclick = () => { st.date = dates[i - 1]; render(); };
