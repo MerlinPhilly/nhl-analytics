@@ -1,8 +1,8 @@
 # Data status
 
-- Last refresh: 2026-11-25T22:00:53+00:00
-- Games through: 2026-11-24
-- Games: 7,378
-- Skater game rows: 265,549
-- Goalie game rows: 15,683
+- Last refresh: 2026-11-26T10:44:35+00:00
+- Games through: 2026-11-25
+- Games: 7,392
+- Skater game rows: 266,053
+- Goalie game rows: 15,711
 - Players: 1,697
