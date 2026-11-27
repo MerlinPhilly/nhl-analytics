@@ -227,3 +227,24 @@ td.cold { background: var(--tier-poor-bg); }
 .recap-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; }
 .recap-list li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
 .recap-hl { background: var(--tier-elite-bg); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.7; }
+
+/* live score ticker */
+.ticker { display: flex; align-items: center; gap: 10px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; margin-bottom: 16px; overflow: hidden; }
+.tk-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-secondary); flex: none; }
+.ticker.has-live .tk-label { color: var(--tier-poor); }
+.tk-viewport { overflow: hidden; flex: 1; mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
+.tk-track { display: flex; gap: 8px; width: max-content; animation: tk-scroll var(--tk-dur, 40s) linear infinite; }
+.tk-track.static { animation: none; }
+.ticker:hover .tk-track { animation-play-state: paused; }
+@keyframes tk-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { .tk-track { animation: none; } .tk-viewport { overflow-x: auto; } }
+.tk-gap { width: 24px; flex: none; }
+.tk-chip { display: grid; grid-template-columns: auto auto; gap: 0 10px; padding: 4px 10px; border-radius: 6px; background: var(--surface-0); border: 1px solid var(--border); color: var(--text-primary); font-size: 13px; flex: none; }
+.tk-chip:hover { border-color: var(--accent); text-decoration: none; }
+.tk-chip.live { border-color: var(--tier-poor); }
+.tk-team { display: flex; justify-content: space-between; gap: 8px; min-width: 62px; grid-column: 1; color: var(--text-secondary); }
+.tk-team.lead { color: var(--text-primary); font-weight: 600; }
+.tk-st { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: 11px; color: var(--text-secondary); white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.tk-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tier-poor); animation: tk-pulse 1.4s ease-in-out infinite; }
+@keyframes tk-pulse { 50% { opacity: .3; } }
+.tk-note { font-size: 11px; color: var(--text-muted); flex: none; }

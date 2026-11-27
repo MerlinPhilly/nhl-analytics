@@ -1227,6 +1227,67 @@ async function recapCard(el, date, games) {
     { k: "game", label: "Game", html: r => `<a href="#/game/${r.game_id}">Box score</a>`, csv: r => r.game_id }], { sortKey: "p", csvName: `scoring-${date}` });
 }
 
+// ---------- live score ticker (Games page)
+// Set LIVE_PROXY to the Cloudflare Worker URL (see relay/worker.js). Empty = try the NHL directly.
+const LIVE_PROXY = "";
+let tickerTimer = null;
+const LIVE_STATES = new Set(["LIVE", "CRIT"]);
+async function fetchLiveScores() {
+  const urls = [LIVE_PROXY && `${LIVE_PROXY.replace(/\/$/, "")}/v1/score/now`, "https://api-web.nhle.com/v1/score/now"].filter(Boolean);
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { cache: "no-store" });
+      if (r.ok) { const d = await r.json(); if (Array.isArray(d.games)) return d.games; }
+    } catch { /* blocked or offline: try the next source */ }
+  }
+  return null;
+}
+function tickerStatus(g) {
+  const st = g.gameState;
+  const per = g.periodDescriptor || {};
+  const pname = per.periodType === "SO" ? "SO" : per.periodType === "OT" ? "OT" : ["", "1st", "2nd", "3rd"][per.number] || `P${per.number}`;
+  if (LIVE_STATES.has(st)) {
+    const c = g.clock || {};
+    return { live: true, text: c.inIntermission ? `${pname} INT` : `${pname} ${c.timeRemaining || ""}`.trim() };
+  }
+  if (st === "OFF" || st === "FINAL") return { text: per.periodType && per.periodType !== "REG" ? `Final/${per.periodType}` : "Final" };
+  const t = g.startTimeUTC ? new Date(g.startTimeUTC).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "";
+  return { text: st === "PPD" ? "Postponed" : t, pre: true };
+}
+function tickerChip(g) {
+  const s = tickerStatus(g), a = g.awayTeam || {}, h = g.homeTeam || {};
+  const sc = t => (s.pre ? "" : `<b class="num">${t.score ?? 0}</b>`);
+  const lead = (t, o) => !s.pre && (t.score ?? 0) > (o.score ?? 0) ? "lead" : "";
+  return `<a class="tk-chip ${s.live ? "live" : ""}" href="#/game/${g.id}">
+    <span class="tk-team ${lead(a, h)}">${esc(a.abbrev || "")} ${sc(a)}</span>
+    <span class="tk-team ${lead(h, a)}">${esc(h.abbrev || "")} ${sc(h)}</span>
+    <span class="tk-st">${s.live ? '<i class="tk-dot"></i>' : ""}${esc(s.text)}</span></a>`;
+}
+async function liveTicker(el) {
+  if (!el) return;
+  clearTimeout(tickerTimer);
+  let games = await fetchLiveScores(), note = "";
+  if (!games) {   // live feed unreachable: show today's schedule from our own data
+    const up = await loadUpcoming();
+    const today = localISO(new Date());
+    games = objs(up?.games).filter(g => g.game_date === today).map(g => ({ id: g.game_id, gameState: "FUT", startTimeUTC: g.start_utc,
+      awayTeam: { abbrev: g.away_abbrev }, homeTeam: { abbrev: g.home_abbrev } }));
+    note = `<span class="tk-note" title="Live scores need the score relay (see README)">Schedule only · live scores not connected</span>`;
+  }
+  if (!document.body.contains(el)) return;
+  if (!games.length) { el.innerHTML = `<div class="ticker"><span class="tk-label">Scores</span><span class="tk-note">No games today</span></div>`; return; }
+  const anyLive = games.some(g => LIVE_STATES.has(g.gameState));
+  const chips = games.map(tickerChip).join("");
+  el.innerHTML = `<div class="ticker ${anyLive ? "has-live" : ""}"><span class="tk-label">${anyLive ? "Live" : "Scores"}</span>
+    <div class="tk-viewport"><div class="tk-track" style="--tk-dur:${Math.max(25, games.length * 7)}s">${chips}<span class="tk-gap"></span>${chips}</div></div>${note}</div>`;
+  const vp = el.querySelector(".tk-viewport"), track = el.querySelector(".tk-track");
+  const half = track.scrollWidth / 2;
+  if (half <= vp.clientWidth) { track.classList.add("static"); track.innerHTML = chips; }   // fits: no scrolling
+  // refresh every 30s while games are live, every 5 min otherwise (only while on this page)
+  if (note) return;
+  tickerTimer = setTimeout(() => { if (document.body.contains(el)) liveTicker(el); }, anyLive ? 30000 : 300000);
+}
+
 // ---------- today's games (Games page)
 const localISO = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 async function todaysGames(el) {
@@ -1270,7 +1331,7 @@ async function pageGames(params) {
     const dates = [...new Set(gl.map(g => g.game_date))].sort();
     if (!st.date || !dates.includes(st.date)) st.date = dates[dates.length - 1] || "";
     const i = dates.indexOf(st.date);
-    app.innerHTML = `<div class="head"><div><h1>Games</h1><div class="meta">${gl.length} games in ${seasonLabel(st.season)}</div></div></div>
+    app.innerHTML = `<div id="ticker"></div><div class="head"><div><h1>Games</h1><div class="meta">${gl.length} games in ${seasonLabel(st.season)}</div></div></div>
       <div id="today"></div>
       <div class="card filters"><label>Season<select id="gs">${[...META.seasons].reverse().map(s => `<option value="${s}" ${s === st.season ? "selected" : ""}>${seasonLabel(s)}</option>`).join("")}</select></label>
       <label>Date<input type="date" id="gd" value="${st.date}" min="${dates[0] || ""}" max="${dates[dates.length - 1] || ""}"></label>
@@ -1278,6 +1339,7 @@ async function pageGames(params) {
       <div class="card"><h2>${st.date ? fmtDate(st.date) : ""}</h2><div class="games-list">${gl.filter(g => g.game_date === st.date).map(gameCard).join("") || '<div class="empty">No games on this date.</div>'}</div></div>
       <div id="recap"></div>
       <div class="card"><h2>All results</h2><div id="all"></div></div>`;
+    liveTicker($("#ticker"));
     todaysGames($("#today"));
     recapCard($("#recap"), st.date, gl.filter(g => g.game_date === st.date));
     $("#gs").onchange = e => { st.season = +e.target.value; st.date = ""; render(); };
@@ -1351,6 +1413,7 @@ function attachPicker(input, teams, onPick) { wireSearch(input, input.nextElemen
 // ------------------------------------------------------------------ router
 async function route() {
   hideTip();
+  clearTimeout(tickerTimer);
   const [path, query] = location.hash.slice(1).split("?");
   const parts = (path || "/").split("/").filter(Boolean);
   const params = new URLSearchParams(query || "");

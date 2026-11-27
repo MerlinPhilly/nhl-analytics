@@ -44,6 +44,16 @@ Every ranking uses one standard scale: **green = good, gray = middle, orange/red
 
 **Form** (`nhl/trends.py`) compares each player's or team's last 10 and last 5 games with what we'd expect from them. Expectation = earlier games this season blended with last season (or the league average for the position). The size of the gap is scored with exact odds: +0.9 or more is Warming, +1.8 or more is Hot, and the same thresholds below zero mean Cooling and Cold. Goalies use save % over their last 5 and 10 games; teams use points % plus goal differential over the last 10. Each badge lists its reasons (point streaks, shot volume, ice-time changes, shooting-% luck).
 
+## Live score ticker (Games page)
+
+The ticker reads the NHL's live score feed from your browser every 30 seconds during games. The NHL doesn't let other websites read that feed directly, so it goes through a tiny free relay (`relay/worker.js`) on Cloudflare. Until the relay is set up, the ticker shows today's schedule with start times.
+
+1. Create a free account at dash.cloudflare.com, then go to **Workers & Pages → Create → Create Worker**, name it `nhl-live`, and click **Deploy**.
+2. Click **Edit code**, replace everything with the contents of `relay/worker.js`, and click **Deploy**.
+3. Copy the Worker's address (like `https://nhl-live.<your-name>.workers.dev`) and set it as `LIVE_PROXY` at the top of the ticker section in `site/app.js`.
+
+The relay only passes through read-only score endpoints, only answers your github.io site, and caches for 15 seconds. The free plan allows 100,000 requests a day, far more than this uses.
+
 ## Running it on your Mac (optional)
 
 ```bash
