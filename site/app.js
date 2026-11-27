@@ -1229,7 +1229,7 @@ async function recapCard(el, date, games) {
 
 // ---------- live score ticker (Games page)
 // Set LIVE_PROXY to the Cloudflare Worker URL (see relay/worker.js). Empty = try the NHL directly.
-const LIVE_PROXY = "";
+const LIVE_PROXY = "https://nhl-live.samerlino.workers.dev";
 let tickerTimer = null;
 const LIVE_STATES = new Set(["LIVE", "CRIT"]);
 async function fetchLiveScores() {

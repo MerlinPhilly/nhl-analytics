@@ -50,7 +50,7 @@ The ticker reads the NHL's live score feed from your browser every 30 seconds du
 
 1. Create a free account at dash.cloudflare.com, then go to **Workers & Pages → Create → Create Worker**, name it `nhl-live`, and click **Deploy**.
 2. Click **Edit code**, replace everything with the contents of `relay/worker.js`, and click **Deploy**.
-3. Copy the Worker's address (like `https://nhl-live.<your-name>.workers.dev`) and set it as `LIVE_PROXY` at the top of the ticker section in `site/app.js`.
+3. Copy the Worker's address (like `https://nhl-live.<your-name>.workers.dev`) and set it as `LIVE_PROXY` at the top of the ticker section in `site/app.js` (currently `https://nhl-live.samerlino.workers.dev`).
 
 The relay only passes through read-only score endpoints, only answers your github.io site, and caches for 15 seconds. The free plan allows 100,000 requests a day, far more than this uses.
 
